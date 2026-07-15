@@ -105,6 +105,31 @@ async function cloudSave(data) {
     db.ref('budgets/' + USER_KEY).set(data, err => resolve(!err));
   });
 }
+
+// ── Cloud storage helpers สำหรับหน้า "รายการผ่อน" (เก็บแยกจากข้อมูลหลัก) ──
+async function cloudLoadInstallments() {
+  if (!db) {
+    try {
+      const raw = localStorage.getItem('jib_installments_v1_' + USER_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+  return new Promise((resolve) => {
+    db.ref('installments/' + USER_KEY).once('value', snap => {
+      resolve(snap.exists() ? snap.val() : null);
+    }, () => resolve(null));
+  });
+}
+
+async function cloudSaveInstallments(data) {
+  if (!db) {
+    try { localStorage.setItem('jib_installments_v1_' + USER_KEY, JSON.stringify(data)); } catch {}
+    return true;
+  }
+  return new Promise((resolve) => {
+    db.ref('installments/' + USER_KEY).set(data, err => resolve(!err));
+  });
+}
 </script>
 
 <script type="text/babel">
@@ -177,6 +202,7 @@ function SetupBanner() {
 
 // ── Main App ──
 function App() {
+  const [page, setPage] = useState('home'); // 'home' | 'installments'
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState(null);
@@ -307,6 +333,10 @@ function App() {
     </div>
   );
 
+  if (page === 'installments') {
+    return <InstallmentPage onBack={() => setPage('home')} />;
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800" style={{fontFamily:"'Sarabun',sans-serif"}}>
       <Toast msg={toast} />
@@ -332,6 +362,10 @@ function App() {
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
+              <button onClick={() => setPage('installments')}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-amber-400 hover:bg-amber-300 active:scale-95 transition-all rounded-xl text-sm font-bold text-slate-900 shadow-md">
+                📦 รายการผ่อน
+              </button>
               <button onClick={handleSave} disabled={saving}
                 className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-white/15 hover:bg-white/25 backdrop-blur border border-white/20 active:scale-95 transition-all rounded-xl text-sm font-bold text-white disabled:opacity-60 shadow-md">
                 {saving ? '⏳ กำลังบันทึก...' : `${FIREBASE_READY?'☁️':'💾'} บันทึกข้อมูล`}
@@ -759,6 +793,515 @@ function App() {
           </p>
         </div>
       </footer>
+    </div>
+  );
+}
+
+// ── Helper: ย่อรูปภาพก่อนเก็บ (จำกัดความกว้างไม่เกิน 640px เพื่อประหยัดพื้นที่) ──
+function resizeImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxW = 640;
+        const scale = Math.min(1, maxW / img.width);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.75));
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+const INSTALLMENT_DEFAULTS = { items: [] };
+
+// ── สร้างตารางผ่อนเริ่มต้น: แบ่งยอดรวมเท่าๆ กันตามจำนวนเดือน (เศษไปรวมงวดสุดท้าย) ──
+function buildSchedule(totalPrice, months) {
+  const m = Math.max(1, +months || 1);
+  const base = Math.floor(totalPrice / m);
+  const remainder = totalPrice - base * m;
+  const arr = [];
+  for (let i = 0; i < m; i++) {
+    arr.push({ amount: base + (i === m - 1 ? remainder : 0), paid: false });
+  }
+  return arr;
+}
+
+// ── มั่นใจว่ารายการมีตารางผ่อน (รองรับข้อมูลเก่าที่ยังไม่มี schedule) ──
+function ensureSchedule(item) {
+  if (Array.isArray(item.schedule) && item.schedule.length === item.months) return item.schedule;
+  const sched = buildSchedule(item.totalPrice, item.months);
+  const paidCount = Math.min(item.paidMonths || 0, item.months);
+  for (let i = 0; i < paidCount; i++) sched[i].paid = true;
+  return sched;
+}
+
+// ── Installment Item Card ──
+function InstallmentCard({ item, onDelete, onPay, onUnpay, onOpenDetail }) {
+  const schedule    = item.schedule || [];
+  const paidCount   = schedule.filter(r => r.paid).length;
+  const paidAmount  = schedule.reduce((s, r) => s + (r.paid ? (+r.amount || 0) : 0), 0);
+  const remaining   = Math.max(item.totalPrice - paidAmount, 0);
+  const pct         = item.months > 0 ? Math.min((paidCount / item.months) * 100, 100) : 0;
+  const isDone      = item.months > 0 && paidCount >= item.months;
+  const nextDue     = schedule.find(r => !r.paid);
+
+  return (
+    <div className={`bg-white rounded-2xl shadow-sm border p-4 flex flex-col gap-3 ${isDone ? 'border-emerald-300 ring-1 ring-emerald-200' : 'border-slate-200/80'}`}>
+      <div className="flex gap-3 cursor-pointer" onClick={() => onOpenDetail(item.id)}>
+        <div className="w-20 h-20 rounded-xl overflow-hidden bg-slate-100 flex-shrink-0 flex items-center justify-center border border-slate-200">
+          {item.image
+            ? <img src={item.image} alt={item.name} className="w-full h-full object-cover" />
+            : <span className="text-2xl text-slate-300">🛍️</span>}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-2">
+            <h3 className="font-bold text-slate-800 text-sm truncate">{item.name}</h3>
+            <button onClick={(e) => { e.stopPropagation(); onDelete(item.id); }} className="text-slate-300 hover:text-rose-500 text-sm flex-shrink-0" title="ลบรายการ">✕</button>
+          </div>
+          <p className="text-xs text-slate-400 mt-0.5">ราคารวม ฿{item.totalPrice.toLocaleString()} · ผ่อน {item.months} เดือน</p>
+          <p className="text-sm font-bold text-indigo-600 mt-0.5">
+            {isDone ? 'ผ่อนครบทุกงวดแล้ว' : `฿${(nextDue ? nextDue.amount : 0).toLocaleString()} / งวดถัดไป`}
+          </p>
+        </div>
+      </div>
+
+      <div>
+        <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
+          <div className={`h-full rounded-full transition-all duration-500 ${isDone ? 'bg-gradient-to-r from-emerald-500 to-emerald-600' : 'bg-gradient-to-r from-amber-400 to-indigo-500'}`}
+            style={{ width: `${pct}%` }} />
+        </div>
+        <div className="flex justify-between items-center mt-1.5 text-[11px] text-slate-500">
+          <span>ผ่อนแล้ว {paidCount}/{item.months} งวด ({Math.round(pct)}%)</span>
+          <span className={isDone ? 'text-emerald-600 font-bold' : 'text-rose-500 font-semibold'}>
+            {isDone ? '✅ ผ่อนครบแล้ว' : `เหลือ ฿${remaining.toLocaleString()}`}
+          </span>
+        </div>
+      </div>
+
+      <div className="flex gap-2">
+        <button onClick={() => onUnpay(item.id)} disabled={paidCount <= 0}
+          className="flex-1 text-xs font-bold py-2 rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50 active:scale-95 transition-all disabled:opacity-40">
+          ↩ ย้อนงวด
+        </button>
+        <button onClick={() => onPay(item.id)} disabled={isDone}
+          className="flex-1 text-xs font-bold py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white active:scale-95 transition-all disabled:opacity-40 disabled:bg-slate-300 shadow-sm">
+          + จ่ายงวดนี้
+        </button>
+      </div>
+      <button onClick={() => onOpenDetail(item.id)}
+        className="text-xs font-bold py-2 rounded-xl border border-indigo-200 text-indigo-600 hover:bg-indigo-50 active:scale-95 transition-all">
+        📋 ดูตาราง / แก้ไขยอดผ่อน
+      </button>
+    </div>
+  );
+}
+
+// ── Add Installment Item Form ──
+function AddInstallmentForm({ onAdd }) {
+  const [name, setName]     = useState('');
+  const [price, setPrice]   = useState('');
+  const [months, setMonths] = useState(3);
+  const [image, setImage]   = useState(null);
+  const [busy, setBusy]     = useState(false);
+
+  const handleImage = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setBusy(true);
+    try {
+      const dataUrl = await resizeImageFile(file);
+      setImage(dataUrl);
+    } catch { /* ignore */ }
+    setBusy(false);
+  };
+
+  const submit = () => {
+    const p = +price;
+    const m = +months;
+    if (!name.trim() || !(p > 0) || !(m >= 1)) return;
+    onAdd({ id: Date.now(), name: name.trim(), totalPrice: p, months: m, image, schedule: buildSchedule(p, m) });
+    setName(''); setPrice(''); setMonths(3); setImage(null);
+  };
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4">
+      <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-2.5 mb-3.5">
+        <span className="text-indigo-600">➕</span>เพิ่มสินค้าที่จะผ่อน
+      </h2>
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+        <div className="sm:col-span-2">
+          <label className="text-[10px] font-semibold text-slate-500 block mb-1">ชื่อสินค้า</label>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="เช่น iPhone 16, ตู้เย็น"
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition-all" />
+        </div>
+        <div>
+          <label className="text-[10px] font-semibold text-slate-500 block mb-1">ราคารวม (฿)</label>
+          <input type="number" min="0" value={price} onChange={e => setPrice(e.target.value)} placeholder="0"
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition-all" />
+        </div>
+        <div>
+          <label className="text-[10px] font-semibold text-slate-500 block mb-1">ผ่อนกี่เดือน</label>
+          <input type="number" min="1" max="60" value={months} onChange={e => setMonths(e.target.value)}
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition-all" />
+        </div>
+      </div>
+      <div className="flex items-center gap-3 mt-3">
+        <label className="inline-flex items-center gap-2 text-xs font-semibold text-indigo-600 border border-indigo-200 hover:bg-indigo-50 px-3 py-2 rounded-xl cursor-pointer transition-all">
+          🖼️ {busy ? 'กำลังโหลดรูป...' : 'อัปโหลดรูปสินค้า'}
+          <input type="file" accept="image/*" className="hidden" onChange={handleImage} />
+        </label>
+        {image && <img src={image} alt="preview" className="w-10 h-10 rounded-lg object-cover border border-slate-200" />}
+        <button onClick={submit} disabled={busy}
+          className="ml-auto inline-flex items-center gap-1.5 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition-all rounded-xl text-sm font-bold text-white disabled:opacity-50 shadow-md shadow-indigo-200">
+          ➕ เพิ่มรายการ
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Installment Detail / Edit Modal ──
+function InstallmentDetailModal({ item, onClose, onToggleRow, onUpdateAmount, onDelete }) {
+  if (!item) return null;
+  const schedule   = item.schedule || [];
+  const paidCount  = schedule.filter(r => r.paid).length;
+  const paidAmount = schedule.reduce((s, r) => s + (r.paid ? (+r.amount || 0) : 0), 0);
+  const remaining  = Math.max(item.totalPrice - paidAmount, 0);
+  const pct        = item.months > 0 ? Math.min((paidCount / item.months) * 100, 100) : 0;
+  const nextDue    = schedule.find(r => !r.paid);
+  let running = 0;
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-3 sm:p-6" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[88vh] overflow-y-auto scrollbar-thin" onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div className="sticky top-0 bg-white border-b border-slate-100 p-4 flex items-center gap-3 rounded-t-2xl z-10">
+          <div className="w-14 h-14 rounded-xl overflow-hidden bg-slate-100 flex-shrink-0 flex items-center justify-center border border-slate-200">
+            {item.image
+              ? <img src={item.image} alt={item.name} className="w-full h-full object-cover" />
+              : <span className="text-xl text-slate-300">🛍️</span>}
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="font-bold text-slate-900 text-sm truncate">{item.name}</h3>
+            <p className="text-xs text-slate-400">ราคารวม ฿{item.totalPrice.toLocaleString()} · ผ่อน {item.months} เดือน</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 text-lg px-2" title="ปิด">✕</button>
+        </div>
+
+        <div className="p-4 space-y-4">
+          {/* Summary */}
+          <div className="grid grid-cols-3 gap-2.5">
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3">
+              <span className="text-[10px] font-semibold text-emerald-700 uppercase tracking-wider block">ผ่อนไปแล้ว</span>
+              <span className="text-base font-extrabold text-emerald-700 block mt-0.5">฿{paidAmount.toLocaleString()}</span>
+              <span className="text-[10px] text-emerald-600">{paidCount}/{item.months} งวด</span>
+            </div>
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
+              <span className="text-[10px] font-semibold text-amber-700 uppercase tracking-wider block">เดือนนี้ต้องจ่าย</span>
+              <span className="text-base font-extrabold text-amber-700 block mt-0.5">฿{(nextDue ? nextDue.amount : 0).toLocaleString()}</span>
+              <span className="text-[10px] text-amber-600">{nextDue ? `งวดที่ ${schedule.indexOf(nextDue) + 1}` : 'ผ่อนครบแล้ว'}</span>
+            </div>
+            <div className="bg-rose-50 border border-rose-200 rounded-xl p-3">
+              <span className="text-[10px] font-semibold text-rose-700 uppercase tracking-wider block">คงเหลือ</span>
+              <span className="text-base font-extrabold text-rose-700 block mt-0.5">฿{remaining.toLocaleString()}</span>
+              <span className="text-[10px] text-rose-600">{Math.round(pct)}% เสร็จแล้ว</span>
+            </div>
+          </div>
+
+          <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
+            <div className="h-full rounded-full bg-gradient-to-r from-amber-400 to-emerald-500 transition-all duration-500" style={{ width: `${pct}%` }} />
+          </div>
+
+          {/* Schedule table */}
+          <div>
+            <h4 className="text-xs font-bold text-slate-600 mb-2">ตารางผ่อนชำระ (แก้ไขจำนวนเงินแต่ละงวดได้)</h4>
+            <div className="overflow-x-auto border border-slate-200 rounded-xl">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 text-slate-500 uppercase text-[10px]">
+                  <tr>
+                    <th className="py-2 px-3 text-left font-bold">งวดที่</th>
+                    <th className="py-2 px-3 text-left font-bold">จำนวนเงิน (฿)</th>
+                    <th className="py-2 px-3 text-center font-bold">สถานะ</th>
+                    <th className="py-2 px-3 text-right font-bold">ยอดสะสมที่จ่ายแล้ว</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {schedule.map((row, idx) => {
+                    if (row.paid) running += (+row.amount || 0);
+                    const isCurrent = !row.paid && nextDue === row;
+                    return (
+                      <tr key={idx} className={isCurrent ? 'bg-amber-50/60' : ''}>
+                        <td className="py-1.5 px-3 font-semibold text-slate-700">
+                          {idx + 1}{isCurrent && <span className="ml-1 text-[9px] text-amber-600 font-bold">◀ งวดนี้</span>}
+                        </td>
+                        <td className="py-1.5 px-3">
+                          <input type="number" min="0" value={row.amount}
+                            onChange={e => onUpdateAmount(idx, +e.target.value || 0)}
+                            className="w-24 px-2 py-1 border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent" />
+                        </td>
+                        <td className="py-1.5 px-3 text-center">
+                          <button onClick={() => onToggleRow(idx)}
+                            className={`text-[10px] font-bold px-2.5 py-1 rounded-full transition-all ${row.paid ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                            {row.paid ? '✓ จ่ายแล้ว' : 'ยังไม่จ่าย'}
+                          </button>
+                        </td>
+                        <td className="py-1.5 px-3 text-right text-slate-500">฿{running.toLocaleString()}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-[10px] text-slate-400 mt-1.5 italic">* คลิกสถานะเพื่อสลับจ่ายแล้ว/ยังไม่จ่าย และแก้ไขจำนวนเงินแต่ละงวดได้โดยตรง</p>
+          </div>
+
+          <div className="flex gap-2 pt-1">
+            <button onClick={() => { onDelete(item.id); onClose(); }}
+              className="text-xs font-bold px-4 py-2.5 rounded-xl border border-rose-200 text-rose-600 hover:bg-rose-50 transition-all">
+              🗑️ ลบรายการนี้
+            </button>
+            <button onClick={onClose}
+              className="ml-auto text-xs font-bold px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition-all shadow-sm">
+              เสร็จสิ้น
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function InstallmentPage({ onBack }) {
+  const [loaded, setLoaded]   = useState(false);
+  const [saving, setSaving]   = useState(false);
+  const [lastSaved, setLastSaved] = useState(null);
+  const [toast, setToast]     = useState('');
+  const [items, setItems]     = useState(INSTALLMENT_DEFAULTS.items);
+  const [detailItemId, setDetailItemId] = useState(null);
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3200); };
+
+  useEffect(() => {
+    cloudLoadInstallments().then(data => {
+      if (data && Array.isArray(data.items)) {
+        setItems(data.items.map(i => ({ ...i, schedule: ensureSchedule(i) })));
+      }
+      if (data && data._savedAt) setLastSaved(data._savedAt);
+      setLoaded(true);
+    });
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    const now = new Date().toLocaleString('th-TH');
+    const ok = await cloudSaveInstallments({ items, _savedAt: now });
+    setSaving(false);
+    setLastSaved(now);
+    showToast(ok
+      ? (FIREBASE_READY ? '☁️ บันทึกออนไลน์เรียบร้อย!' : '💾 บันทึกในเครื่องเรียบร้อย!')
+      : '❌ บันทึกไม่สำเร็จ กรุณาลองใหม่');
+  };
+
+  const addItem = (item) => { setItems(prev => [...prev, item]); showToast('➕ เพิ่มสินค้าแล้ว'); };
+  const deleteItem = (id) => {
+    if (!window.confirm('ลบรายการผ่อนนี้?')) return;
+    setItems(prev => prev.filter(i => i.id !== id));
+  };
+  const payMonth = (id) => setItems(prev => prev.map(i => {
+    if (i.id !== id) return i;
+    const schedule = i.schedule.map(r => ({ ...r }));
+    const idx = schedule.findIndex(r => !r.paid);
+    if (idx === -1) return i;
+    schedule[idx].paid = true;
+    return { ...i, schedule };
+  }));
+  const unpayMonth = (id) => setItems(prev => prev.map(i => {
+    if (i.id !== id) return i;
+    const schedule = i.schedule.map(r => ({ ...r }));
+    let idx = -1;
+    for (let j = schedule.length - 1; j >= 0; j--) { if (schedule[j].paid) { idx = j; break; } }
+    if (idx === -1) return i;
+    schedule[idx].paid = false;
+    return { ...i, schedule };
+  }));
+  const toggleRow = (itemId, rowIdx) => setItems(prev => prev.map(i => {
+    if (i.id !== itemId) return i;
+    const schedule = i.schedule.map((r, idx) => idx === rowIdx ? { ...r, paid: !r.paid } : r);
+    return { ...i, schedule };
+  }));
+  const updateRowAmount = (itemId, rowIdx, amount) => setItems(prev => prev.map(i => {
+    if (i.id !== itemId) return i;
+    const schedule = i.schedule.map((r, idx) => idx === rowIdx ? { ...r, amount } : r);
+    return { ...i, schedule };
+  }));
+
+  // ── Dashboard calculations ──
+  const totalItems    = items.length;
+  const totalValue    = useMemo(() => items.reduce((s, i) => s + i.totalPrice, 0), [items]);
+  const totalPaid     = useMemo(() => items.reduce((s, i) =>
+    s + (i.schedule || []).reduce((ss, r) => ss + (r.paid ? (+r.amount || 0) : 0), 0), 0), [items]);
+  const totalRemaining = Math.max(totalValue - totalPaid, 0);
+  const monthlyTotal   = useMemo(() => items.reduce((s, i) => {
+    const nextRow = (i.schedule || []).find(r => !r.paid);
+    return s + (nextRow ? (+nextRow.amount || 0) : 0);
+  }, 0), [items]);
+  const doneCount = items.filter(i => (i.schedule || []).length > 0 && (i.schedule || []).every(r => r.paid)).length;
+  const overallPct = totalValue > 0 ? Math.min((totalPaid / totalValue) * 100, 100) : 0;
+  const detailItem = detailItemId ? items.find(i => i.id === detailItemId) : null;
+
+  if (!loaded) return (
+    <div className="flex flex-col items-center justify-center min-h-screen gap-4 bg-slate-50">
+      <div className="text-5xl animate-spin">⏳</div>
+      <p className="text-slate-500 font-medium">กำลังโหลดข้อมูล{FIREBASE_READY ? 'จากคลาวด์' : ''}...</p>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-800" style={{ fontFamily: "'Sarabun',sans-serif" }}>
+      <Toast msg={toast} />
+
+      {/* ── HEADER ── */}
+      <header className="bg-gradient-to-r from-amber-500 via-orange-600 to-indigo-800 text-white shadow-xl">
+        <div className="max-w-6xl mx-auto px-4 py-5 sm:px-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <div className="flex flex-wrap gap-2 mb-1.5">
+                <span className="bg-white/20 border border-white/20 text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider">รายการผ่อน</span>
+                <span className={`${FIREBASE_READY ? 'bg-emerald-400/20 border-emerald-400/20 text-emerald-100' : 'bg-amber-900/20 border-amber-900/20 text-amber-100'} border text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider`}>
+                  {FIREBASE_READY ? '☁️ ออนไลน์' : '💾 ออฟไลน์'}
+                </span>
+              </div>
+              <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight flex items-center gap-2">📦 รายการผ่อนสินค้า</h1>
+              <p className="text-amber-100 text-xs mt-1 max-w-xl">
+                ติดตามสินค้าที่กำลังผ่อนทั้งหมดในที่เดียว
+                {lastSaved && <span className="ml-2 text-amber-100/70">· บันทึกล่าสุด: {lastSaved}</span>}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={onBack}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-white/15 hover:bg-white/25 backdrop-blur border border-white/20 active:scale-95 transition-all rounded-xl text-sm font-bold text-white shadow-md">
+                ⬅ กลับหน้าแดชบอร์ด
+              </button>
+              <button onClick={handleSave} disabled={saving}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-white/15 hover:bg-white/25 backdrop-blur border border-white/20 active:scale-95 transition-all rounded-xl text-sm font-bold text-white disabled:opacity-60 shadow-md">
+                {saving ? '⏳ กำลังบันทึก...' : `${FIREBASE_READY ? '☁️' : '💾'} บันทึกข้อมูล`}
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-6xl mx-auto px-4 py-5 sm:px-6 space-y-5">
+
+        {/* ── DASHBOARD SUMMARY ── */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80">
+            <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block">จำนวนสินค้าที่ผ่อน</span>
+            <span className="text-xl sm:text-2xl font-extrabold text-slate-900 block mt-0.5">{totalItems} รายการ</span>
+            <span className="text-[10px] text-emerald-600 font-medium">ผ่อนครบแล้ว {doneCount} รายการ</span>
+          </div>
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80">
+            <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block">ยอดผ่อนรวมทั้งหมด</span>
+            <span className="text-xl sm:text-2xl font-extrabold text-indigo-700 block mt-0.5">฿{totalValue.toLocaleString()}</span>
+            <span className="text-[10px] text-slate-400">ผ่านไปแล้ว {Math.round(overallPct)}%</span>
+          </div>
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80">
+            <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block">ต้องจ่ายรวม/เดือนนี้</span>
+            <span className="text-xl sm:text-2xl font-extrabold text-rose-600 block mt-0.5">฿{Math.round(monthlyTotal).toLocaleString()}</span>
+            <span className="text-[10px] text-slate-400">จากรายการที่ยังผ่อนไม่ครบ</span>
+          </div>
+          <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4">
+            <span className="text-[10px] font-semibold uppercase tracking-wider block text-emerald-700">ผ่อนไปแล้ว / คงเหลือ</span>
+            <span className="text-xl sm:text-2xl font-extrabold text-emerald-700 block mt-0.5">฿{totalPaid.toLocaleString()}</span>
+            <span className="text-[10px] text-rose-600 font-medium">คงเหลือ ฿{totalRemaining.toLocaleString()}</span>
+          </div>
+        </div>
+
+        {/* ── OVERALL PROGRESS ── */}
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4">
+          <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-2.5 mb-3.5">
+            <span className="text-amber-500">📊</span>ความคืบหน้าการผ่อนทั้งหมด
+          </h2>
+          <div className="w-full h-4 bg-slate-100 rounded-full overflow-hidden mb-2">
+            <div className="h-full rounded-full bg-gradient-to-r from-amber-400 via-orange-500 to-indigo-600 transition-all duration-700" style={{ width: `${overallPct}%` }} />
+          </div>
+          <div className="flex justify-between text-xs text-slate-500">
+            <span className="font-extrabold text-slate-800 text-sm">{Math.round(overallPct)}%</span>
+            <span>ผ่อนแล้ว ฿{totalPaid.toLocaleString()} จาก ฿{totalValue.toLocaleString()}</span>
+          </div>
+        </div>
+
+        {/* ── ADD ITEM FORM ── */}
+        <AddInstallmentForm onAdd={addItem} />
+
+        {/* ── ITEM LIST ── */}
+        <div>
+          <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 mb-3">
+            <span className="text-indigo-600">🗂️</span>รายการสินค้าที่กำลังผ่อน
+          </h2>
+          {items.length === 0 ? (
+            <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-8 text-center text-slate-400 text-sm">
+              ยังไม่มีรายการผ่อน — เพิ่มสินค้ารายการแรกได้ที่ฟอร์มด้านบน
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {items.map(item => (
+                <InstallmentCard key={item.id} item={item} onDelete={deleteItem} onPay={payMonth} onUnpay={unpayMonth} onOpenDetail={setDetailItemId} />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* ── SAVE REMINDER BAR ── */}
+        <div className="bg-gradient-to-r from-amber-50 to-indigo-50 border border-amber-100 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex items-start sm:items-center gap-3">
+            <span className="text-2xl flex-shrink-0">{FIREBASE_READY ? '☁️' : '💾'}</span>
+            <div>
+              <p className="text-sm font-bold text-indigo-800">{FIREBASE_READY ? 'บันทึกออนไลน์' : 'บันทึกในเครื่อง'}</p>
+              <p className="text-xs text-indigo-600">แก้ไขข้อมูลแล้ว? กด "บันทึกข้อมูล" เพื่อเซฟ
+                {lastSaved && <span className="ml-1 text-indigo-400">· บันทึกล่าสุด: {lastSaved}</span>}
+              </p>
+            </div>
+          </div>
+          <button onClick={handleSave} disabled={saving}
+            className="flex-shrink-0 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-sm font-bold px-6 py-2.5 rounded-xl transition-all disabled:opacity-60 shadow-md shadow-indigo-200">
+            {saving ? '⏳ กำลังบันทึก...' : `${FIREBASE_READY ? '☁️' : '💾'} บันทึกข้อมูล`}
+          </button>
+        </div>
+
+      </main>
+
+      <footer className="bg-slate-900 text-slate-400 text-xs py-6 mt-6 border-t border-slate-800">
+        <div className="max-w-6xl mx-auto px-4 text-center space-y-2">
+          <p className="font-semibold text-slate-300">📦 รายการผ่อนสินค้า</p>
+          <p className="text-[11px] text-slate-500">
+            {FIREBASE_READY
+              ? '☁️ ข้อมูลบันทึกออนไลน์ผ่าน Firebase · สามารถเข้าถึงได้ทุกอุปกรณ์'
+              : '⚠️ โหมดออฟไลน์ · ข้อมูลบันทึกในเบราว์เซอร์นี้เท่านั้น'}
+          </p>
+        </div>
+      </footer>
+
+      {detailItem && (
+        <InstallmentDetailModal
+          item={detailItem}
+          onClose={() => setDetailItemId(null)}
+          onToggleRow={(rowIdx) => toggleRow(detailItem.id, rowIdx)}
+          onUpdateAmount={(rowIdx, amount) => updateRowAmount(detailItem.id, rowIdx, amount)}
+          onDelete={deleteItem}
+        />
+      )}
     </div>
   );
 }
