@@ -1,0 +1,1726 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>แดชบอร์ดสรุปค่าใช้จ่าย & วางแผนค่าเทอม คุณจิ๊บ</title>
+
+<!--
+  ╔══════════════════════════════════════════════════════════════════╗
+  ║  วิธีนำไปใช้งานบน Google Sites                                  ║
+  ║  1. ไปที่ Google Sites > แก้ไขหน้า                             ║
+  ║  2. คลิก Insert (แทรก) > Embed                                  ║
+  ║  3. เลือกแท็บ "Embed code"                                     ║
+  ║  4. Copy โค้ดทั้งหมดในไฟล์นี้ วาง แล้วกด Next > Insert        ║
+  ║  5. ลาก resize กล่อง Embed ให้สูงประมาณ 2500-3000px            ║
+  ║                                                                  ║
+  ║  การบันทึกข้อมูลออนไลน์:                                        ║
+  ║  - ใช้ Firebase Realtime Database (ฟรี 1GB)                    ║
+  ║  - กรอก USER_KEY ที่บรรทัด 60 เพื่อแยกข้อมูลส่วนตัว           ║
+  ║  - กด "💾 บันทึกข้อมูล" ทุกครั้งที่ต้องการเซฟ                 ║
+  ╚══════════════════════════════════════════════════════════════════╝
+-->
+
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com"></script>
+
+<!-- React -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Sarabun', sans-serif; background: #f8fafc; }
+  input[type=range] { -webkit-appearance: none; appearance: none; height: 8px; border-radius: 4px; background: #e2e8f0; outline: none; width: 100%; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: #4f46e5; cursor: pointer; }
+  .scrollbar-thin::-webkit-scrollbar { width: 5px; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: #f1f5f9; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+  @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap');
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+// ══════════════════════════════════════════════════════
+//  🔧 ตั้งค่า Firebase (ฟรี — ใช้โปรเจกต์ของตัวเอง)
+//  วิธีสร้าง: console.firebase.google.com > สร้างโปรเจกต์
+//  > Realtime Database > สร้างฐานข้อมูล (mode: test)
+//  > Project settings > Web app > copy firebaseConfig
+// ══════════════════════════════════════════════════════
+const firebaseConfig = {
+  apiKey: "AIzaSyD20tuSfVIW5qu-e-l87nLNrZARed7ewjU",
+  authDomain: "jeep04-bbb77.firebaseapp.com",
+  databaseURL: "https://jeep04-bbb77-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "jeep04-bbb77",
+  storageBucket: "jeep04-bbb77.firebasestorage.app",
+  messagingSenderId: "139782996517",
+  appId: "1:139782996517:web:23b6d8e2359671eae975cc",
+  measurementId: "G-13Q1W6RF17"
+};
+
+// 🔑 USER_KEY: ใส่ชื่อผู้ใช้ เช่น "jib" เพื่อแยกข้อมูลส่วนตัว
+//    (ถ้าใช้คนเดียวใส่ชื่ออะไรก็ได้)
+const USER_KEY = "jib";
+
+// ── ตรวจสอบว่า Firebase config ถูกกรอกแล้ว ──
+const FIREBASE_READY = firebaseConfig.apiKey !== "YOUR_API_KEY";
+
+let db = null;
+if (FIREBASE_READY) {
+  try {
+    const app = firebase.initializeApp(firebaseConfig);
+    db = firebase.database(app);
+  } catch(e) { console.warn("Firebase init failed:", e); }
+}
+
+// ── Cloud storage helpers ──
+async function cloudLoad() {
+  // ถ้า Firebase ยังไม่ได้ตั้งค่า → ใช้ localStorage แทน
+  if (!db) {
+    try {
+      const raw = localStorage.getItem('jib_budget_v3_' + USER_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+  return new Promise((resolve) => {
+    db.ref('budgets/' + USER_KEY).once('value', snap => {
+      resolve(snap.exists() ? snap.val() : null);
+    }, () => resolve(null));
+  });
+}
+
+async function cloudSave(data) {
+  if (!db) {
+    try { localStorage.setItem('jib_budget_v3_' + USER_KEY, JSON.stringify(data)); } catch {}
+    return true;
+  }
+  return new Promise((resolve) => {
+    db.ref('budgets/' + USER_KEY).set(data, err => resolve(!err));
+  });
+}
+
+// ── Cloud storage helpers สำหรับหน้า "รายการผ่อน" (เก็บแยกจากข้อมูลหลัก) ──
+async function cloudLoadInstallments() {
+  if (!db) {
+    try {
+      const raw = localStorage.getItem('jib_installments_v1_' + USER_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+  return new Promise((resolve) => {
+    db.ref('installments/' + USER_KEY).once('value', snap => {
+      resolve(snap.exists() ? snap.val() : null);
+    }, () => resolve(null));
+  });
+}
+
+async function cloudSaveInstallments(data) {
+  if (!db) {
+    try { localStorage.setItem('jib_installments_v1_' + USER_KEY, JSON.stringify(data)); } catch {}
+    return true;
+  }
+  return new Promise((resolve) => {
+    db.ref('installments/' + USER_KEY).set(data, err => resolve(!err));
+  });
+}
+
+// ── Cloud storage helpers สำหรับหน้า "ทรัพย์สิน" (เงิน + ทอง) ──
+async function cloudLoadAssets() {
+  if (!db) {
+    try {
+      const raw = localStorage.getItem('jib_assets_v1_' + USER_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+  return new Promise((resolve) => {
+    db.ref('assets/' + USER_KEY).once('value', snap => {
+      resolve(snap.exists() ? snap.val() : null);
+    }, () => resolve(null));
+  });
+}
+
+async function cloudSaveAssets(data) {
+  if (!db) {
+    try { localStorage.setItem('jib_assets_v1_' + USER_KEY, JSON.stringify(data)); } catch {}
+    return true;
+  }
+  return new Promise((resolve) => {
+    db.ref('assets/' + USER_KEY).set(data, err => resolve(!err));
+  });
+}
+
+// ── ดึงราคาทองคำปัจจุบัน (สมาคมค้าทองคำไทย) ──
+async function fetchGoldPrice() {
+  const res = await fetch('https://api.chnwt.dev/thai-gold-api/latest');
+  if (!res.ok) throw new Error('bad response');
+  const json = await res.json();
+  if (json.status !== 'success') throw new Error('api error');
+  const num = (s) => parseFloat(String(s).replace(/,/g, '')) || 0;
+  return {
+    barBuy: num(json.response.price.gold_bar.buy),
+    barSell: num(json.response.price.gold_bar.sell),
+    jewelryBuy: num(json.response.price.gold.buy),
+    jewelrySell: num(json.response.price.gold.sell),
+    updateDate: json.response.update_date,
+    updateTime: json.response.update_time,
+  };
+}
+</script>
+
+<script type="text/babel">
+const { useState, useMemo, useEffect, useCallback } = React;
+
+const DEFAULTS = {
+  grossSalary: 37000,
+  netSalary: 33400,
+  monthlyExpenses: [
+    { id: 1, name: 'ที่บ้าน ไฟ เน็ต', amount: 3000 },
+    { id: 2, name: 'น้ำมันรถยนต์', amount: 3000 },
+    { id: 3, name: 'โทรศัพท์', amount: 1200 },
+  ],
+  schoolName: 'โรงเรียนบีคอนเฮาส์แย้มสะอาด',
+  tuitionPerTerm: 72750,
+  busPerTerm: 13000,
+  termsPerYear: 2,
+  subsidies: [
+    { id: 1, name: 'BTS ช่วย', amount: 10000 },
+    { id: 2, name: 'พี่ผึ้ง ช่วย', amount: 10000 },
+  ],
+  selectedSaving: 15000,
+  scenarios: [15000, 18000, 20000],
+  tuitionGoalTarget: 151500,
+  tuitionSaved: 0,
+};
+
+// ── Toast Component ──
+function Toast({ msg }) {
+  if (!msg) return null;
+  return (
+    <div className="fixed bottom-5 right-5 z-50 bg-slate-900 text-white px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-2.5 text-sm font-medium border border-slate-700 animate-bounce">
+      <span className="text-emerald-400 text-base">✓</span>
+      <span>{msg}</span>
+    </div>
+  );
+}
+
+// ── Setup Banner ──
+function SetupBanner() {
+  const [open, setOpen] = useState(false);
+  if (FIREBASE_READY) return null;
+  return (
+    <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-4">
+      <div className="flex items-start gap-3">
+        <span className="text-2xl mt-0.5">⚠️</span>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-bold text-amber-800">โหมดออฟไลน์ — ข้อมูลบันทึกในเครื่องนี้เท่านั้น</p>
+          <p className="text-xs text-amber-700 mt-1">เพื่อบันทึกออนไลน์ข้ามอุปกรณ์ได้ ต้องตั้งค่า Firebase ก่อน</p>
+          <button onClick={() => setOpen(!open)} className="text-xs text-amber-800 underline mt-1 font-semibold">
+            {open ? '▲ ซ่อนวิธีตั้งค่า' : '▼ ดูวิธีตั้งค่า Firebase (ฟรี)'}
+          </button>
+          {open && (
+            <div className="mt-3 bg-amber-100/80 rounded-xl p-3 text-xs text-amber-900 space-y-1.5 font-mono leading-relaxed">
+              <p className="font-bold text-amber-800 font-sans">วิธีตั้งค่า Firebase Realtime Database (ฟรี):</p>
+              <p>1. ไปที่ <a href="https://console.firebase.google.com" target="_blank" className="underline text-blue-700">console.firebase.google.com</a></p>
+              <p>2. สร้างโปรเจกต์ใหม่ (Add project)</p>
+              <p>3. ไปที่ Build → Realtime Database → Create database</p>
+              <p>4. เลือก "Start in test mode" → Next</p>
+              <p>5. ไปที่ Project Settings (⚙️) → Your apps → เพิ่ม Web app</p>
+              <p>6. Copy firebaseConfig ที่ได้ไปวางแทนใน <code className="bg-amber-200 px-1 rounded">firebaseConfig</code> บรรทัดที่ 60</p>
+              <p>7. แก้ไข <code className="bg-amber-200 px-1 rounded">USER_KEY</code> เป็นชื่อที่ต้องการ เช่น <code className="bg-amber-200 px-1 rounded">"jib"</code></p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main App ──
+function App() {
+  const [page, setPage] = useState('home'); // 'home' | 'installments' | 'assets'
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [lastSaved, setLastSaved] = useState(null);
+  const [toast, setToast] = useState('');
+
+  // State
+  const [grossSalary, setGrossSalary]         = useState(DEFAULTS.grossSalary);
+  const [netSalary, setNetSalary]             = useState(DEFAULTS.netSalary);
+  const [monthlyExpenses, setMonthlyExpenses] = useState(DEFAULTS.monthlyExpenses);
+  const [schoolName, setSchoolName]           = useState(DEFAULTS.schoolName);
+  const [tuitionPerTerm, setTuitionPerTerm]   = useState(DEFAULTS.tuitionPerTerm);
+  const [busPerTerm, setBusPerTerm]           = useState(DEFAULTS.busPerTerm);
+  const [termsPerYear, setTermsPerYear]       = useState(DEFAULTS.termsPerYear);
+  const [subsidies, setSubsidies]             = useState(DEFAULTS.subsidies);
+  const [selectedSaving, setSelectedSaving]   = useState(DEFAULTS.selectedSaving);
+  const [scenarios, setScenarios]             = useState(DEFAULTS.scenarios);
+  const [tuitionGoalTarget, setTuitionGoalTarget] = useState(DEFAULTS.tuitionGoalTarget);
+  const [tuitionSaved, setTuitionSaved]       = useState(DEFAULTS.tuitionSaved);
+
+  // Form states
+  const [newExpName, setNewExpName]   = useState('');
+  const [newExpAmt, setNewExpAmt]     = useState('');
+  const [newSubName, setNewSubName]   = useState('');
+  const [newSubAmt, setNewSubAmt]     = useState('');
+  const [newScenAmt, setNewScenAmt]   = useState('');
+
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(''), 3200);
+  };
+
+  // Load data on mount
+  useEffect(() => {
+    cloudLoad().then(data => {
+      if (data) {
+        if (data.grossSalary !== undefined)      setGrossSalary(data.grossSalary);
+        if (data.netSalary !== undefined)        setNetSalary(data.netSalary);
+        if (data.monthlyExpenses)                setMonthlyExpenses(data.monthlyExpenses);
+        if (data.schoolName)                     setSchoolName(data.schoolName);
+        if (data.tuitionPerTerm !== undefined)   setTuitionPerTerm(data.tuitionPerTerm);
+        if (data.busPerTerm !== undefined)       setBusPerTerm(data.busPerTerm);
+        if (data.termsPerYear !== undefined)     setTermsPerYear(data.termsPerYear);
+        if (data.subsidies)                      setSubsidies(data.subsidies);
+        if (data.selectedSaving !== undefined)   setSelectedSaving(data.selectedSaving);
+        if (data.scenarios)                      setScenarios(data.scenarios);
+        if (data.tuitionGoalTarget !== undefined) setTuitionGoalTarget(data.tuitionGoalTarget);
+        if (data.tuitionSaved !== undefined)     setTuitionSaved(data.tuitionSaved);
+        if (data._savedAt)                       setLastSaved(data._savedAt);
+      }
+      setLoaded(true);
+    });
+  }, []);
+
+  const getDataToSave = () => ({
+    grossSalary, netSalary, monthlyExpenses,
+    schoolName, tuitionPerTerm, busPerTerm, termsPerYear,
+    subsidies, selectedSaving, scenarios,
+    tuitionGoalTarget, tuitionSaved,
+    _savedAt: new Date().toLocaleString('th-TH'),
+  });
+
+  const handleSave = async () => {
+    setSaving(true);
+    const ok = await cloudSave(getDataToSave());
+    setSaving(false);
+    const now = new Date().toLocaleString('th-TH');
+    setLastSaved(now);
+    showToast(ok
+      ? (FIREBASE_READY ? '☁️ บันทึกออนไลน์เรียบร้อย!' : '💾 บันทึกในเครื่องเรียบร้อย!')
+      : '❌ บันทึกไม่สำเร็จ กรุณาลองใหม่');
+  };
+
+  const handleReset = () => {
+    if (!window.confirm('รีเซ็ตข้อมูลทั้งหมดกลับเป็นค่าเริ่มต้น?')) return;
+    setGrossSalary(DEFAULTS.grossSalary);
+    setNetSalary(DEFAULTS.netSalary);
+    setMonthlyExpenses(DEFAULTS.monthlyExpenses);
+    setSchoolName(DEFAULTS.schoolName);
+    setTuitionPerTerm(DEFAULTS.tuitionPerTerm);
+    setBusPerTerm(DEFAULTS.busPerTerm);
+    setTermsPerYear(DEFAULTS.termsPerYear);
+    setSubsidies(DEFAULTS.subsidies);
+    setSelectedSaving(DEFAULTS.selectedSaving);
+    setScenarios(DEFAULTS.scenarios);
+    setTuitionGoalTarget(DEFAULTS.tuitionGoalTarget);
+    setTuitionSaved(DEFAULTS.tuitionSaved);
+    showToast('🔄 รีเซ็ตข้อมูลแล้ว');
+  };
+
+  const copyReport = () => {
+    const text = [
+      '=== สรุปแผนการเงินคุณจิ๊บ ===',
+      `เงินเดือนสุทธิ: ฿${netSalary.toLocaleString()}`,
+      `ค่าใช้จ่ายรายเดือน: ฿${totalExp.toLocaleString()}`,
+      `โรงเรียน: ${schoolName}`,
+      `ค่าเทอมสุทธิ/ปี: ฿${netTuitionYr.toLocaleString()} (เฉลี่ย ฿${Math.round(netTuitionYr/12).toLocaleString()}/เดือน)`,
+      `แผนออม: ฿${selectedSaving.toLocaleString()}/เดือน (฿${annualSavings.toLocaleString()}/ปี)`,
+      `สถานะ: ${isCovered ? '✅ ครอบคลุมแล้ว' : `❌ ขาดอีก ฿${Math.abs(surplus).toLocaleString()}`}`,
+      `เงินเหลือส่วนตัว: ฿${remaining.toLocaleString()}/เดือน`,
+    ].join('\n');
+    navigator.clipboard.writeText(text).then(
+      () => showToast('📋 คัดลอกรายงานแล้ว!'),
+      () => showToast('❌ คัดลอกไม่ได้ในเบราว์เซอร์นี้')
+    );
+  };
+
+  // ── Calculations ──
+  const totalExp        = useMemo(() => monthlyExpenses.reduce((s,i)=>s+i.amount,0), [monthlyExpenses]);
+  const totalSchoolYr   = useMemo(() => (tuitionPerTerm+busPerTerm)*termsPerYear, [tuitionPerTerm,busPerTerm,termsPerYear]);
+  const totalSubYr      = useMemo(() => subsidies.reduce((s,i)=>s+i.amount,0), [subsidies]);
+  const netTuitionYr    = useMemo(() => Math.max(totalSchoolYr-totalSubYr,0), [totalSchoolYr,totalSubYr]);
+  const annualSavings   = selectedSaving * 12;
+  const isCovered       = annualSavings >= netTuitionYr;
+  const surplus         = annualSavings - netTuitionYr;
+  const remaining       = netSalary - totalExp - selectedSaving;
+  const goalPct         = tuitionGoalTarget > 0 ? Math.min((tuitionSaved/tuitionGoalTarget)*100, 100) : 0;
+  const goalRem         = Math.max(tuitionGoalTarget - tuitionSaved, 0);
+  const goalReached     = goalRem <= 0 && tuitionGoalTarget > 0;
+  const monthsToGoal    = selectedSaving > 0 ? Math.ceil(goalRem/selectedSaving) : null;
+
+  const remColor = remaining >= 10000 ? 'text-emerald-700' : remaining > 0 ? 'text-amber-700' : 'text-rose-700';
+  const remBg    = remaining >= 10000 ? 'bg-emerald-50 border-emerald-200' : remaining > 0 ? 'bg-amber-50 border-amber-200' : 'bg-rose-50 border-rose-200';
+
+  if (!loaded) return (
+    <div className="flex flex-col items-center justify-center min-h-screen gap-4 bg-slate-50">
+      <div className="text-5xl animate-spin">⏳</div>
+      <p className="text-slate-500 font-medium">กำลังโหลดข้อมูล{FIREBASE_READY ? 'จากคลาวด์' : ''}...</p>
+    </div>
+  );
+
+  if (page === 'installments') {
+    return <InstallmentPage onBack={() => setPage('home')} />;
+  }
+
+  if (page === 'assets') {
+    return <AssetsPage onBack={() => setPage('home')} />;
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-800" style={{fontFamily:"'Sarabun',sans-serif"}}>
+      <Toast msg={toast} />
+
+      {/* ── HEADER ── */}
+      <header className="bg-gradient-to-r from-emerald-600 via-teal-700 to-indigo-800 text-white shadow-xl">
+        <div className="max-w-6xl mx-auto px-4 py-5 sm:px-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <div className="flex flex-wrap gap-2 mb-1.5">
+                <span className="bg-emerald-500/30 border border-emerald-400/20 text-emerald-200 text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider">วางแผนการเงิน</span>
+                <span className="bg-indigo-500/30 border border-indigo-400/20 text-indigo-200 text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider">สำหรับบุตรหลาน</span>
+                <span className={`${FIREBASE_READY?'bg-emerald-400/20 border-emerald-400/20 text-emerald-200':'bg-amber-400/20 border-amber-400/20 text-amber-200'} border text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider`}>
+                  {FIREBASE_READY ? '☁️ ออนไลน์' : '💾 ออฟไลน์'}
+                </span>
+              </div>
+              <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight flex items-center gap-2">
+                💰 แดชบอร์ดค่าใช้จ่าย & วางแผนค่าเทอม คุณจิ๊บ
+              </h1>
+              <p className="text-emerald-100 text-xs mt-1 max-w-xl">
+                สำหรับ <strong className="underline decoration-wavy decoration-emerald-300">{schoolName}</strong>
+                {lastSaved && <span className="ml-2 text-emerald-300/70">· บันทึกล่าสุด: {lastSaved}</span>}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={() => setPage('assets')}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-yellow-400 hover:bg-yellow-300 active:scale-95 transition-all rounded-xl text-sm font-bold text-slate-900 shadow-md">
+                💎 ทรัพย์สิน
+              </button>
+              <button onClick={() => setPage('installments')}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-amber-400 hover:bg-amber-300 active:scale-95 transition-all rounded-xl text-sm font-bold text-slate-900 shadow-md">
+                📦 รายการผ่อน
+              </button>
+              <button onClick={handleSave} disabled={saving}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-white/15 hover:bg-white/25 backdrop-blur border border-white/20 active:scale-95 transition-all rounded-xl text-sm font-bold text-white disabled:opacity-60 shadow-md">
+                {saving ? '⏳ กำลังบันทึก...' : `${FIREBASE_READY?'☁️':'💾'} บันทึกข้อมูล`}
+              </button>
+              <button onClick={copyReport}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-emerald-500 hover:bg-emerald-400 active:scale-95 transition-all rounded-xl text-sm font-bold text-white shadow-md">
+                📋 คัดลอกสรุป
+              </button>
+              <button onClick={handleReset}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-slate-700/50 hover:bg-slate-700/80 active:scale-95 transition-all rounded-xl text-sm font-bold border border-slate-600 text-white">
+                🔄 รีเซ็ต
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-6xl mx-auto px-4 py-5 sm:px-6 space-y-5">
+
+        <SetupBanner />
+
+        {/* ── SUMMARY CARDS ── */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {/* Card 1 */}
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 flex items-center justify-between gap-2">
+            <div>
+              <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block">เงินเดือนสุทธิ</span>
+              <span className="text-xl sm:text-2xl font-extrabold text-slate-900 block mt-0.5">฿{netSalary.toLocaleString()}</span>
+              <span className="text-[10px] text-slate-400">จาก ฿{grossSalary.toLocaleString()}</span>
+            </div>
+            <div className="p-2.5 bg-emerald-50 rounded-xl text-emerald-600 flex-shrink-0">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
+          </div>
+          {/* Card 2 */}
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 flex items-center justify-between gap-2">
+            <div>
+              <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block">ค่าใช้จ่าย/เดือน</span>
+              <span className="text-xl sm:text-2xl font-extrabold text-rose-600 block mt-0.5">฿{totalExp.toLocaleString()}</span>
+              <span className="text-[10px] text-slate-400">{monthlyExpenses.length} รายการ</span>
+            </div>
+            <div className="p-2.5 bg-rose-50 rounded-xl text-rose-500 flex-shrink-0">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"/></svg>
+            </div>
+          </div>
+          {/* Card 3 */}
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 flex items-center justify-between gap-2">
+            <div>
+              <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block">ค่าเทอมสุทธิ/ปี</span>
+              <span className="text-xl sm:text-2xl font-extrabold text-indigo-700 block mt-0.5">฿{netTuitionYr.toLocaleString()}</span>
+              <span className="text-[10px] text-indigo-500 font-medium">เฉลี่ย ฿{Math.round(netTuitionYr/12).toLocaleString()}/เดือน</span>
+            </div>
+            <div className="p-2.5 bg-indigo-50 rounded-xl text-indigo-600 flex-shrink-0">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+            </div>
+          </div>
+          {/* Card 4 */}
+          <div className={`rounded-2xl p-4 shadow-sm border flex items-center justify-between gap-2 ${remBg}`}>
+            <div>
+              <span className="text-[10px] font-semibold uppercase tracking-wider block opacity-70">เงินเหลือส่วนตัว/เดือน</span>
+              <span className={`text-xl sm:text-2xl font-extrabold block mt-0.5 ${remColor}`}>฿{remaining.toLocaleString()}</span>
+              <span className="text-[10px] opacity-70 block">หักจ่ายและออมแล้ว</span>
+            </div>
+            <div className={`p-2.5 rounded-xl flex-shrink-0 text-xl ${remaining>=10000?'bg-emerald-100':remaining>0?'bg-amber-100':'bg-rose-100'}`}>
+              {remaining >= 10000 ? '😊' : remaining > 0 ? '😐' : '😰'}
+            </div>
+          </div>
+        </div>
+
+        {/* ── MAIN GRID ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+
+          {/* ── LEFT: Inputs ── */}
+          <div className="lg:col-span-5 space-y-4">
+
+            {/* เงินเดือน */}
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4">
+              <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-2.5 mb-3.5">
+                <span>💵</span>รายได้
+              </h2>
+              <div className="grid grid-cols-2 gap-3">
+                {[['เงินเดือนก่อนหัก', grossSalary, setGrossSalary], ['เงินเดือนสุทธิ (หักแล้ว)', netSalary, setNetSalary]].map(([label, val, setter]) => (
+                  <div key={label}>
+                    <label className="text-[10px] font-semibold text-slate-500 block mb-1">{label}</label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs">฿</span>
+                      <input type="number" value={val} onChange={e => setter(Math.max(0, +e.target.value || 0))}
+                        className="w-full pl-7 pr-2 py-2 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-400 focus:border-emerald-400 outline-none transition-all"/>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* ค่าใช้จ่ายรายเดือน */}
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4">
+              <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-2.5 mb-3.5">
+                <span>🏠</span>ค่าใช้จ่ายรายเดือนส่วนตัว
+              </h2>
+              <div className="space-y-2 mb-3 max-h-40 overflow-y-auto scrollbar-thin">
+                {monthlyExpenses.map(exp => (
+                  <div key={exp.id} className="flex justify-between items-center text-xs bg-slate-50 hover:bg-slate-100 transition-colors rounded-xl px-3 py-2 border border-slate-100">
+                    <span className="font-medium text-slate-700 flex-1 min-w-0 truncate">{exp.name}</span>
+                    <div className="flex items-center gap-2 ml-2 flex-shrink-0">
+                      <span className="font-bold text-slate-900">฿{exp.amount.toLocaleString()}</span>
+                      <button onClick={() => { setMonthlyExpenses(monthlyExpenses.filter(i => i.id !== exp.id)); showToast('ลบรายการแล้ว'); }}
+                        className="text-slate-300 hover:text-rose-500 transition-colors w-4 h-4 flex items-center justify-center">✕</button>
+                    </div>
+                  </div>
+                ))}
+                {monthlyExpenses.length === 0 && <p className="text-xs text-slate-400 italic text-center py-2">ยังไม่มีรายการค่าใช้จ่าย</p>}
+              </div>
+              <div className="flex gap-1.5">
+                <input type="text" placeholder="ชื่อรายการ" value={newExpName} onChange={e => setNewExpName(e.target.value)}
+                  className="flex-1 text-xs border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-rose-400 focus:border-rose-400 transition-all"/>
+                <input type="number" placeholder="฿" value={newExpAmt} onChange={e => setNewExpAmt(e.target.value)}
+                  className="w-20 text-xs border border-slate-200 rounded-xl px-2 py-2 outline-none focus:ring-2 focus:ring-rose-400 focus:border-rose-400 transition-all text-center"/>
+                <button onClick={() => {
+                  if (!newExpName || !newExpAmt) return;
+                  setMonthlyExpenses([...monthlyExpenses, { id: Date.now(), name: newExpName, amount: +newExpAmt }]);
+                  setNewExpName(''); setNewExpAmt(''); showToast('เพิ่มรายการค่าใช้จ่ายแล้ว');
+                }} className="bg-rose-500 hover:bg-rose-400 active:scale-95 text-white text-xs px-3 py-2 rounded-xl font-bold transition-all">+ เพิ่ม</button>
+              </div>
+              <div className="mt-3 flex justify-between text-xs pt-2.5 border-t border-slate-100">
+                <span className="text-slate-500 font-medium">รวมค่าใช้จ่ายส่วนตัว</span>
+                <span className="font-extrabold text-rose-600">฿{totalExp.toLocaleString()} / เดือน</span>
+              </div>
+            </div>
+
+            {/* ค่าเทอมและโรงเรียน */}
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4">
+              <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-2.5 mb-3.5">
+                <span>🎓</span>ค่าใช้จ่ายการศึกษา
+              </h2>
+              <div className="mb-3">
+                <label className="text-[10px] font-semibold text-slate-500 block mb-1">ชื่อโรงเรียน / สถาบัน</label>
+                <input type="text" value={schoolName} onChange={e => setSchoolName(e.target.value)}
+                  className="w-full text-sm border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 transition-all"/>
+              </div>
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                {[['ค่าเรียนหลัก / เทอม', tuitionPerTerm, setTuitionPerTerm], ['ค่ารถรับ-ส่ง / เทอม', busPerTerm, setBusPerTerm]].map(([label, val, setter]) => (
+                  <div key={label}>
+                    <label className="text-[10px] font-semibold text-slate-500 block mb-1">{label}</label>
+                    <div className="relative">
+                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs">฿</span>
+                      <input type="number" value={val} onChange={e => setter(Math.max(0, +e.target.value || 0))}
+                        className="w-full pl-6 pr-2 py-2 text-xs border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 transition-all"/>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                <div>
+                  <label className="text-[10px] font-semibold text-slate-500 block mb-1">จำนวนเทอม / ปี</label>
+                  <select value={termsPerYear} onChange={e => setTermsPerYear(+e.target.value)}
+                    className="w-full text-xs border border-slate-200 rounded-xl py-2 px-3 outline-none focus:ring-2 focus:ring-indigo-400 bg-white">
+                    <option value="1">1 เทอม / ปี</option>
+                    <option value="2">2 เทอม / ปี</option>
+                    <option value="3">3 เทอม / ปี</option>
+                    <option value="4">4 เทอม / ปี</option>
+                  </select>
+                </div>
+                <div className="flex flex-col justify-center bg-slate-50 rounded-xl px-3 py-2 border border-slate-100">
+                  <span className="text-[10px] text-slate-400">ค่าเรียนรวม/ปี (ก่อนหักทุน)</span>
+                  <span className="text-sm font-bold text-slate-700 mt-0.5">฿{totalSchoolYr.toLocaleString()}</span>
+                </div>
+              </div>
+
+              {/* เงินช่วยเหลือ */}
+              <div className="border-t border-slate-100 pt-3.5">
+                <span className="text-[10px] font-bold text-indigo-700 block mb-2">🎫 เงินช่วยเหลือ / ทุนสนับสนุนค่าเทอม (ต่อปี)</span>
+                <div className="space-y-1.5 mb-2.5 max-h-28 overflow-y-auto scrollbar-thin">
+                  {subsidies.map(sub => (
+                    <div key={sub.id} className="flex justify-between items-center text-xs bg-indigo-50/50 rounded-xl px-3 py-1.5 border border-indigo-100/50">
+                      <span className="font-medium text-slate-700">{sub.name}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-slate-900">฿{sub.amount.toLocaleString()}</span>
+                        <button onClick={() => { setSubsidies(subsidies.filter(i => i.id !== sub.id)); showToast('ลบรายการแล้ว'); }}
+                          className="text-slate-300 hover:text-rose-500 transition-colors">✕</button>
+                      </div>
+                    </div>
+                  ))}
+                  {subsidies.length === 0 && <p className="text-xs text-slate-400 italic text-center py-2">ไม่มีเงินสนับสนุน (จ่ายเองทั้งหมด)</p>}
+                </div>
+                <div className="flex gap-1.5">
+                  <input type="text" placeholder="ชื่อผู้ช่วย/ทุน" value={newSubName} onChange={e => setNewSubName(e.target.value)}
+                    className="flex-1 text-xs border border-indigo-200 rounded-xl px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-indigo-400"/>
+                  <input type="number" placeholder="฿/ปี" value={newSubAmt} onChange={e => setNewSubAmt(e.target.value)}
+                    className="w-20 text-xs border border-indigo-200 rounded-xl px-2 py-1.5 outline-none focus:ring-1 focus:ring-indigo-400 text-center"/>
+                  <button onClick={() => {
+                    if (!newSubName || !newSubAmt) return;
+                    setSubsidies([...subsidies, { id: Date.now(), name: newSubName, amount: +newSubAmt }]);
+                    setNewSubName(''); setNewSubAmt(''); showToast('เพิ่มรายการแล้ว');
+                  }} className="bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-xs px-3 py-1.5 rounded-xl font-bold transition-all">+ เพิ่ม</button>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2 pt-2.5 border-t border-slate-100 text-xs">
+                  <div>
+                    <span className="text-slate-400 block">รวมเงินช่วยเหลือ/ปี</span>
+                    <span className="font-bold text-indigo-600">฿{totalSubYr.toLocaleString()}</span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-slate-400 block">ค่าเทอมสุทธิที่ต้องจ่าย/ปี</span>
+                    <span className="font-extrabold text-indigo-700">฿{netTuitionYr.toLocaleString()}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* ── RIGHT: Simulator & Analysis ── */}
+          <div className="lg:col-span-7 space-y-4">
+
+            {/* แบบจำลองการออม */}
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-2.5 mb-4">
+                <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <span className="text-indigo-600">🎯</span>แบบจำลองการออมเงินค่าเทอม
+                </h2>
+                <span className="text-[10px] text-slate-400 italic">คลิกเลือกเพื่อจำลองผล</span>
+              </div>
+
+              {/* Scenario buttons */}
+              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-4">
+                {scenarios.map(val => (
+                  <div key={val} onClick={() => setSelectedSaving(val)}
+                    className={`relative group rounded-xl p-2.5 border cursor-pointer text-center transition-all ${selectedSaving === val ? 'bg-emerald-600 text-white border-emerald-600 shadow-md shadow-emerald-100 scale-[1.03]' : 'bg-slate-50 hover:bg-slate-100 text-slate-800 border-slate-200 hover:border-slate-300'}`}>
+                    <span className={`text-[9px] uppercase font-bold tracking-wider block ${selectedSaving === val ? 'text-emerald-200' : 'text-slate-400'}`}>ออมเดือนละ</span>
+                    <span className="text-base font-extrabold block">฿{val.toLocaleString()}</span>
+                    <span className={`text-[9px] block ${selectedSaving === val ? 'text-emerald-200' : 'text-slate-400'}`}>{(val * 12).toLocaleString()}/ปี</span>
+                    <button onClick={e => {
+                      e.stopPropagation();
+                      if (scenarios.length <= 1) { showToast('ต้องมีแผนอย่างน้อย 1 แผน'); return; }
+                      const updated = scenarios.filter(s => s !== val);
+                      setScenarios(updated);
+                      if (selectedSaving === val) setSelectedSaving(updated[0]);
+                      showToast('ลบแผนแล้ว');
+                    }} className="absolute -top-1.5 -right-1.5 hidden group-hover:flex items-center justify-center w-4.5 h-4.5 bg-rose-500 text-white rounded-full text-[9px] shadow w-5 h-5">✕</button>
+                  </div>
+                ))}
+                <div>
+                  <input type="number" placeholder="เพิ่มแผน..." value={newScenAmt} onChange={e => setNewScenAmt(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key !== 'Enter') return;
+                      const amt = parseInt(newScenAmt);
+                      if (!amt || amt <= 0) return;
+                      if (scenarios.includes(amt)) { showToast('มีแผนนี้อยู่แล้ว'); return; }
+                      setScenarios([...scenarios, amt].sort((a,b) => a-b));
+                      setSelectedSaving(amt); setNewScenAmt(''); showToast('เพิ่มแผนแล้ว');
+                    }}
+                    className="w-full text-center text-xs border-2 border-dashed border-slate-300 hover:border-slate-400 focus:border-slate-500 rounded-xl py-2.5 px-2 outline-none transition-all bg-slate-50"/>
+                  {newScenAmt && (
+                    <button onClick={() => {
+                      const amt = parseInt(newScenAmt);
+                      if (!amt || amt <= 0) return;
+                      if (scenarios.includes(amt)) { showToast('มีแผนนี้อยู่แล้ว'); return; }
+                      setScenarios([...scenarios, amt].sort((a,b) => a-b));
+                      setSelectedSaving(amt); setNewScenAmt(''); showToast('เพิ่มแผนแล้ว');
+                    }} className="mt-1 w-full bg-slate-700 hover:bg-slate-600 text-white text-[10px] py-1 rounded-lg font-bold transition-colors">+ เพิ่ม</button>
+                  )}
+                </div>
+              </div>
+
+              {/* Slider */}
+              <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/50 mb-4">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-xs font-bold text-slate-600">ปรับรายละเอียดแผนออม:</span>
+                  <span className="text-sm font-extrabold text-indigo-700">฿{selectedSaving.toLocaleString()} / เดือน</span>
+                </div>
+                <input type="range" min="5000" max="25000" step="500" value={selectedSaving}
+                  onChange={e => setSelectedSaving(+e.target.value)}/>
+                <div className="flex justify-between text-[9px] text-slate-400 font-medium mt-1.5">
+                  <span>฿5K</span><span>฿10K</span><span>฿15K</span><span>฿20K</span><span>฿25K</span>
+                </div>
+              </div>
+
+              {/* Results */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className={`p-4 rounded-2xl border ${isCovered ? 'bg-emerald-50/50 border-emerald-200' : 'bg-rose-50/50 border-rose-200'}`}>
+                  <h3 className="text-[10px] font-bold uppercase tracking-wider opacity-80 mb-2 flex items-center gap-1.5">
+                    <span className={`w-2 h-2 rounded-full ${isCovered ? 'bg-emerald-500 animate-ping' : 'bg-rose-500'}`}/>
+                    สถานะแผนออมค่าเทอม
+                  </h3>
+                  <p className="text-sm font-black mb-1">{isCovered ? '✅ ออมครอบคลุมแล้ว' : '❌ ยังไม่ครอบคลุมปีนี้'}</p>
+                  <p className="text-xs opacity-85 leading-relaxed">
+                    ออมได้ <span className="font-bold">฿{annualSavings.toLocaleString()}</span> ต่อปี<br/>
+                    {isCovered ? 'เกินกว่า' : 'ขาดอีก'} <span className="font-semibold underline">฿{Math.abs(surplus).toLocaleString()}</span>
+                    {isCovered && <span className="block mt-1 text-emerald-700 font-semibold">เก็บส่วนเกินได้ ฿{surplus.toLocaleString()} / ปี</span>}
+                  </p>
+                </div>
+                <div className="bg-slate-50 border border-slate-200 p-4 rounded-2xl">
+                  <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2.5">สรุปส่วนต่างรายเดือนสุทธิ</h3>
+                  <table className="w-full text-xs">
+                    <tbody className="divide-y divide-slate-100">
+                      <tr><td className="py-1 text-slate-400">เงินเดือนสุทธิ</td><td className="text-right font-bold text-slate-800">฿{netSalary.toLocaleString()}</td></tr>
+                      <tr><td className="py-1 text-slate-400">หักค่าใช้จ่ายส่วนตัว</td><td className="text-right font-bold text-rose-500">−฿{totalExp.toLocaleString()}</td></tr>
+                      <tr><td className="py-1 text-slate-400">หักออมค่าเทอม</td><td className="text-right font-bold text-indigo-500">−฿{selectedSaving.toLocaleString()}</td></tr>
+                      <tr className="border-t-2 border-slate-200">
+                        <td className="pt-2 font-bold text-slate-800">คงเหลือใช้จ่ายส่วนตัว</td>
+                        <td className={`pt-2 text-right text-sm font-black ${remaining >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>฿{remaining.toLocaleString()}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            {/* เป้าหมายเก็บเงิน */}
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4">
+              <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-2.5 mb-3.5">
+                <span className="text-amber-500">🎯</span>ติดตามเป้าหมายเก็บเงินค่าเทอม
+              </h2>
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                {[
+                  ['ตั้งเป้าหมายเงินที่ต้องเก็บ', tuitionGoalTarget, setTuitionGoalTarget, 'ring-amber-400'],
+                  ['เก็บได้แล้วตอนนี้', tuitionSaved, setTuitionSaved, 'ring-emerald-400'],
+                ].map(([label, val, setter, ring]) => (
+                  <div key={label}>
+                    <label className="text-[10px] font-semibold text-slate-500 block mb-1">{label}</label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs">฿</span>
+                      <input type="number" min="0" value={val} onChange={e => setter(Math.max(0, +e.target.value || 0))}
+                        className={`w-full pl-7 pr-2 py-2 text-sm border border-slate-200 rounded-xl outline-none focus:ring-2 focus:${ring} focus:border-transparent transition-all`}/>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="w-full h-4 bg-slate-100 rounded-full overflow-hidden mb-2">
+                <div className={`h-full rounded-full transition-all duration-700 ${goalReached ? 'bg-gradient-to-r from-emerald-500 to-emerald-600' : 'bg-gradient-to-r from-amber-400 to-indigo-500'}`}
+                  style={{ width: `${goalPct}%` }}/>
+              </div>
+              <div className="flex flex-col sm:flex-row sm:justify-between gap-1.5 text-xs">
+                <span className="font-extrabold text-slate-800 text-sm">{Math.round(goalPct)}%</span>
+                {goalReached
+                  ? <span className="font-semibold text-emerald-700">🎉 ถึงเป้าหมายแล้ว! เก็บได้ ฿{tuitionSaved.toLocaleString()} / ฿{tuitionGoalTarget.toLocaleString()}</span>
+                  : <span className="text-slate-500">เหลืออีก <span className="font-bold text-rose-600">฿{goalRem.toLocaleString()}</span>
+                    {monthsToGoal !== null && <> · ออมอีกประมาณ <span className="font-bold text-indigo-600">{monthsToGoal} เดือน</span> (฿{selectedSaving.toLocaleString()}/ด.)</>}
+                  </span>}
+              </div>
+            </div>
+
+            {/* ตารางเปรียบเทียบ */}
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4">
+              <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-2.5 mb-3.5">
+                <span className="text-indigo-600">📊</span>เปรียบเทียบผลลัพธ์แผนการออม
+              </h2>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs text-left">
+                  <thead className="text-[10px] text-slate-500 uppercase bg-slate-50">
+                    <tr>
+                      <th className="py-2.5 px-3 rounded-l-lg font-bold">ออมเดือนละ</th>
+                      <th className="py-2.5 px-3 font-bold text-center">รวม/ปี</th>
+                      <th className="py-2.5 px-3 font-bold text-center">ความครอบคลุม</th>
+                      <th className="py-2.5 px-3 font-bold text-center">ส่วนต่าง</th>
+                      <th className="py-2.5 px-3 rounded-r-lg font-bold text-right">เหลือใช้/เดือน</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {scenarios.sort((a,b) => a-b).map(val => {
+                      const yrS = val * 12;
+                      const cov = yrS >= netTuitionYr;
+                      const surp = yrS - netTuitionYr;
+                      const rem = netSalary - totalExp - val;
+                      const isAct = selectedSaving === val;
+                      return (
+                        <tr key={val} onClick={() => setSelectedSaving(val)}
+                          className={`border-b border-slate-100 cursor-pointer transition-all hover:bg-slate-50/80 ${isAct ? 'bg-emerald-50/40 font-semibold border-l-4 border-l-emerald-500' : ''}`}>
+                          <td className="py-2.5 px-3">
+                            <span className="flex items-center gap-1.5">
+                              {isAct && <span className="text-emerald-600 font-extrabold text-[10px]">▶</span>}
+                              ฿{val.toLocaleString()}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-center">฿{yrS.toLocaleString()}</td>
+                          <td className="py-2.5 px-3 text-center">
+                            {cov
+                              ? <span className="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold text-[10px]">✓ ครอบคลุม</span>
+                              : <span className="bg-rose-100 text-rose-800 px-2 py-0.5 rounded-full font-bold text-[10px]">ขาด</span>}
+                          </td>
+                          <td className={`py-2.5 px-3 text-center font-bold ${surp >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
+                            {surp >= 0 ? '+' : ''}฿{surp.toLocaleString()}
+                          </td>
+                          <td className={`py-2.5 px-3 text-right font-black ${rem >= 5000 ? 'text-slate-800' : 'text-rose-600'}`}>
+                            ฿{rem.toLocaleString()}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-[10px] text-slate-400 mt-2 italic text-center">* คลิกแถวเพื่อเลือกแผน</p>
+            </div>
+
+          </div>
+        </div>
+
+        {/* ── SAVE REMINDER BAR ── */}
+        <div className="bg-gradient-to-r from-indigo-50 to-emerald-50 border border-indigo-100 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex items-start sm:items-center gap-3">
+            <span className="text-2xl flex-shrink-0">{FIREBASE_READY ? '☁️' : '💾'}</span>
+            <div>
+              <p className="text-sm font-bold text-indigo-800">{FIREBASE_READY ? 'บันทึกออนไลน์' : 'บันทึกในเครื่อง'}</p>
+              <p className="text-xs text-indigo-600">แก้ไขข้อมูลแล้ว? กด "บันทึกข้อมูล" เพื่อเซฟ
+                {lastSaved && <span className="ml-1 text-indigo-400">· บันทึกล่าสุด: {lastSaved}</span>}
+              </p>
+            </div>
+          </div>
+          <button onClick={handleSave} disabled={saving}
+            className="flex-shrink-0 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-sm font-bold px-6 py-2.5 rounded-xl transition-all disabled:opacity-60 shadow-md shadow-indigo-200">
+            {saving ? '⏳ กำลังบันทึก...' : `${FIREBASE_READY ? '☁️' : '💾'} บันทึกข้อมูล`}
+          </button>
+        </div>
+
+      </main>
+
+      {/* ── FOOTER ── */}
+      <footer className="bg-slate-900 text-slate-400 text-xs py-6 mt-6 border-t border-slate-800">
+        <div className="max-w-6xl mx-auto px-4 text-center space-y-2">
+          <p className="font-semibold text-slate-300">📊 แดชบอร์ดสรุปค่าใช้จ่าย & วางแผนค่าเทอม สำหรับครอบครัว</p>
+          <p>สูตร: <code className="text-indigo-400 bg-slate-800 px-1.5 py-0.5 rounded">เงินเดือนสุทธิ − ค่าใช้จ่ายส่วนตัว − ออมค่าเทอม = เงินเหลือใช้จ่ายส่วนตัว</code></p>
+          <p className="text-[11px] text-slate-500">
+            {FIREBASE_READY
+              ? '☁️ ข้อมูลบันทึกออนไลน์ผ่าน Firebase · สามารถเข้าถึงได้ทุกอุปกรณ์'
+              : '⚠️ โหมดออฟไลน์ · ข้อมูลบันทึกในเบราว์เซอร์นี้เท่านั้น · ตั้งค่า Firebase เพื่อบันทึกออนไลน์'}
+          </p>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+// ── Helper: ย่อรูปภาพก่อนเก็บ (จำกัดความกว้างไม่เกิน 640px เพื่อประหยัดพื้นที่) ──
+function resizeImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxW = 640;
+        const scale = Math.min(1, maxW / img.width);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.75));
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+const INSTALLMENT_DEFAULTS = { items: [] };
+
+// ── Defaults สำหรับหน้า "ทรัพย์สิน" ──
+const ASSET_DEFAULTS = {
+  cashItems: [],
+  goldItems: [],
+  goldPriceBar: 0,
+  goldPriceJewelry: 0,
+  goldPriceUpdatedText: '',
+};
+const GOLD_TYPES = {
+  bar:     { label: 'ทองคำแท่ง 96.5%',   emoji: '🥇' },
+  jewelry: { label: 'ทองรูปพรรณ 96.5%', emoji: '📿' },
+};
+
+// ── สร้างตารางผ่อนเริ่มต้น: แบ่งยอดรวมเท่าๆ กันตามจำนวนเดือน (เศษไปรวมงวดสุดท้าย) ──
+function buildSchedule(totalPrice, months) {
+  const m = Math.max(1, +months || 1);
+  const base = Math.floor(totalPrice / m);
+  const remainder = totalPrice - base * m;
+  const arr = [];
+  for (let i = 0; i < m; i++) {
+    arr.push({ amount: base + (i === m - 1 ? remainder : 0), paid: false });
+  }
+  return arr;
+}
+
+// ── มั่นใจว่ารายการมีตารางผ่อน (รองรับข้อมูลเก่าที่ยังไม่มี schedule) ──
+function ensureSchedule(item) {
+  if (Array.isArray(item.schedule) && item.schedule.length === item.months) return item.schedule;
+  const sched = buildSchedule(item.totalPrice, item.months);
+  const paidCount = Math.min(item.paidMonths || 0, item.months);
+  for (let i = 0; i < paidCount; i++) sched[i].paid = true;
+  return sched;
+}
+
+// ── Installment Item Card ──
+function InstallmentCard({ item, onDelete, onPay, onUnpay, onOpenDetail }) {
+  const schedule    = item.schedule || [];
+  const paidCount   = schedule.filter(r => r.paid).length;
+  const paidAmount  = schedule.reduce((s, r) => s + (r.paid ? (+r.amount || 0) : 0), 0);
+  const remaining   = Math.max(item.totalPrice - paidAmount, 0);
+  const pct         = item.months > 0 ? Math.min((paidCount / item.months) * 100, 100) : 0;
+  const isDone      = item.months > 0 && paidCount >= item.months;
+  const nextDue     = schedule.find(r => !r.paid);
+
+  return (
+    <div className={`bg-white rounded-2xl shadow-sm border p-4 flex flex-col gap-3 ${isDone ? 'border-emerald-300 ring-1 ring-emerald-200' : 'border-slate-200/80'}`}>
+      <div className="flex gap-3 cursor-pointer" onClick={() => onOpenDetail(item.id)}>
+        <div className="w-20 h-20 rounded-xl overflow-hidden bg-slate-100 flex-shrink-0 flex items-center justify-center border border-slate-200">
+          {item.image
+            ? <img src={item.image} alt={item.name} className="w-full h-full object-cover" />
+            : <span className="text-2xl text-slate-300">🛍️</span>}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-2">
+            <h3 className="font-bold text-slate-800 text-sm truncate">{item.name}</h3>
+            <button onClick={(e) => { e.stopPropagation(); onDelete(item.id); }} className="text-slate-300 hover:text-rose-500 text-sm flex-shrink-0" title="ลบรายการ">✕</button>
+          </div>
+          <p className="text-xs text-slate-400 mt-0.5">ราคารวม ฿{item.totalPrice.toLocaleString()} · ผ่อน {item.months} เดือน</p>
+          <p className="text-sm font-bold text-indigo-600 mt-0.5">
+            {isDone ? 'ผ่อนครบทุกงวดแล้ว' : `฿${(nextDue ? nextDue.amount : 0).toLocaleString()} / งวดถัดไป`}
+          </p>
+        </div>
+      </div>
+
+      <div>
+        <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
+          <div className={`h-full rounded-full transition-all duration-500 ${isDone ? 'bg-gradient-to-r from-emerald-500 to-emerald-600' : 'bg-gradient-to-r from-amber-400 to-indigo-500'}`}
+            style={{ width: `${pct}%` }} />
+        </div>
+        <div className="flex justify-between items-center mt-1.5 text-[11px] text-slate-500">
+          <span>ผ่อนแล้ว {paidCount}/{item.months} งวด ({Math.round(pct)}%)</span>
+          <span className={isDone ? 'text-emerald-600 font-bold' : 'text-rose-500 font-semibold'}>
+            {isDone ? '✅ ผ่อนครบแล้ว' : `เหลือ ฿${remaining.toLocaleString()}`}
+          </span>
+        </div>
+      </div>
+
+      <div className="flex gap-2">
+        <button onClick={() => onUnpay(item.id)} disabled={paidCount <= 0}
+          className="flex-1 text-xs font-bold py-2 rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50 active:scale-95 transition-all disabled:opacity-40">
+          ↩ ย้อนงวด
+        </button>
+        <button onClick={() => onPay(item.id)} disabled={isDone}
+          className="flex-1 text-xs font-bold py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white active:scale-95 transition-all disabled:opacity-40 disabled:bg-slate-300 shadow-sm">
+          + จ่ายงวดนี้
+        </button>
+      </div>
+      <button onClick={() => onOpenDetail(item.id)}
+        className="text-xs font-bold py-2 rounded-xl border border-indigo-200 text-indigo-600 hover:bg-indigo-50 active:scale-95 transition-all">
+        📋 ดูตาราง / แก้ไขยอดผ่อน
+      </button>
+    </div>
+  );
+}
+
+// ── Add Installment Item Form ──
+function AddInstallmentForm({ onAdd }) {
+  const [name, setName]     = useState('');
+  const [price, setPrice]   = useState('');
+  const [months, setMonths] = useState(3);
+  const [image, setImage]   = useState(null);
+  const [busy, setBusy]     = useState(false);
+
+  const handleImage = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setBusy(true);
+    try {
+      const dataUrl = await resizeImageFile(file);
+      setImage(dataUrl);
+    } catch { /* ignore */ }
+    setBusy(false);
+  };
+
+  const submit = () => {
+    const p = +price;
+    const m = +months;
+    if (!name.trim() || !(p > 0) || !(m >= 1)) return;
+    onAdd({ id: Date.now(), name: name.trim(), totalPrice: p, months: m, image, schedule: buildSchedule(p, m) });
+    setName(''); setPrice(''); setMonths(3); setImage(null);
+  };
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4">
+      <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-2.5 mb-3.5">
+        <span className="text-indigo-600">➕</span>เพิ่มสินค้าที่จะผ่อน
+      </h2>
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+        <div className="sm:col-span-2">
+          <label className="text-[10px] font-semibold text-slate-500 block mb-1">ชื่อสินค้า</label>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="เช่น iPhone 16, ตู้เย็น"
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition-all" />
+        </div>
+        <div>
+          <label className="text-[10px] font-semibold text-slate-500 block mb-1">ราคารวม (฿)</label>
+          <input type="number" min="0" value={price} onChange={e => setPrice(e.target.value)} placeholder="0"
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition-all" />
+        </div>
+        <div>
+          <label className="text-[10px] font-semibold text-slate-500 block mb-1">ผ่อนกี่เดือน</label>
+          <input type="number" min="1" max="60" value={months} onChange={e => setMonths(e.target.value)}
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition-all" />
+        </div>
+      </div>
+      <div className="flex items-center gap-3 mt-3">
+        <label className="inline-flex items-center gap-2 text-xs font-semibold text-indigo-600 border border-indigo-200 hover:bg-indigo-50 px-3 py-2 rounded-xl cursor-pointer transition-all">
+          🖼️ {busy ? 'กำลังโหลดรูป...' : 'อัปโหลดรูปสินค้า'}
+          <input type="file" accept="image/*" className="hidden" onChange={handleImage} />
+        </label>
+        {image && <img src={image} alt="preview" className="w-10 h-10 rounded-lg object-cover border border-slate-200" />}
+        <button onClick={submit} disabled={busy}
+          className="ml-auto inline-flex items-center gap-1.5 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition-all rounded-xl text-sm font-bold text-white disabled:opacity-50 shadow-md shadow-indigo-200">
+          ➕ เพิ่มรายการ
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Installment Detail / Edit Modal ──
+function InstallmentDetailModal({ item, onClose, onToggleRow, onUpdateAmount, onDelete }) {
+  if (!item) return null;
+  const schedule   = item.schedule || [];
+  const paidCount  = schedule.filter(r => r.paid).length;
+  const paidAmount = schedule.reduce((s, r) => s + (r.paid ? (+r.amount || 0) : 0), 0);
+  const remaining  = Math.max(item.totalPrice - paidAmount, 0);
+  const pct        = item.months > 0 ? Math.min((paidCount / item.months) * 100, 100) : 0;
+  const nextDue    = schedule.find(r => !r.paid);
+  let running = 0;
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-3 sm:p-6" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[88vh] overflow-y-auto scrollbar-thin" onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div className="sticky top-0 bg-white border-b border-slate-100 p-4 flex items-center gap-3 rounded-t-2xl z-10">
+          <div className="w-14 h-14 rounded-xl overflow-hidden bg-slate-100 flex-shrink-0 flex items-center justify-center border border-slate-200">
+            {item.image
+              ? <img src={item.image} alt={item.name} className="w-full h-full object-cover" />
+              : <span className="text-xl text-slate-300">🛍️</span>}
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="font-bold text-slate-900 text-sm truncate">{item.name}</h3>
+            <p className="text-xs text-slate-400">ราคารวม ฿{item.totalPrice.toLocaleString()} · ผ่อน {item.months} เดือน</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 text-lg px-2" title="ปิด">✕</button>
+        </div>
+
+        <div className="p-4 space-y-4">
+          {/* Summary */}
+          <div className="grid grid-cols-3 gap-2.5">
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3">
+              <span className="text-[10px] font-semibold text-emerald-700 uppercase tracking-wider block">ผ่อนไปแล้ว</span>
+              <span className="text-base font-extrabold text-emerald-700 block mt-0.5">฿{paidAmount.toLocaleString()}</span>
+              <span className="text-[10px] text-emerald-600">{paidCount}/{item.months} งวด</span>
+            </div>
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
+              <span className="text-[10px] font-semibold text-amber-700 uppercase tracking-wider block">เดือนนี้ต้องจ่าย</span>
+              <span className="text-base font-extrabold text-amber-700 block mt-0.5">฿{(nextDue ? nextDue.amount : 0).toLocaleString()}</span>
+              <span className="text-[10px] text-amber-600">{nextDue ? `งวดที่ ${schedule.indexOf(nextDue) + 1}` : 'ผ่อนครบแล้ว'}</span>
+            </div>
+            <div className="bg-rose-50 border border-rose-200 rounded-xl p-3">
+              <span className="text-[10px] font-semibold text-rose-700 uppercase tracking-wider block">คงเหลือ</span>
+              <span className="text-base font-extrabold text-rose-700 block mt-0.5">฿{remaining.toLocaleString()}</span>
+              <span className="text-[10px] text-rose-600">{Math.round(pct)}% เสร็จแล้ว</span>
+            </div>
+          </div>
+
+          <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
+            <div className="h-full rounded-full bg-gradient-to-r from-amber-400 to-emerald-500 transition-all duration-500" style={{ width: `${pct}%` }} />
+          </div>
+
+          {/* Schedule table */}
+          <div>
+            <h4 className="text-xs font-bold text-slate-600 mb-2">ตารางผ่อนชำระ (แก้ไขจำนวนเงินแต่ละงวดได้)</h4>
+            <div className="overflow-x-auto border border-slate-200 rounded-xl">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 text-slate-500 uppercase text-[10px]">
+                  <tr>
+                    <th className="py-2 px-3 text-left font-bold">งวดที่</th>
+                    <th className="py-2 px-3 text-left font-bold">จำนวนเงิน (฿)</th>
+                    <th className="py-2 px-3 text-center font-bold">สถานะ</th>
+                    <th className="py-2 px-3 text-right font-bold">ยอดสะสมที่จ่ายแล้ว</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {schedule.map((row, idx) => {
+                    if (row.paid) running += (+row.amount || 0);
+                    const isCurrent = !row.paid && nextDue === row;
+                    return (
+                      <tr key={idx} className={isCurrent ? 'bg-amber-50/60' : ''}>
+                        <td className="py-1.5 px-3 font-semibold text-slate-700">
+                          {idx + 1}{isCurrent && <span className="ml-1 text-[9px] text-amber-600 font-bold">◀ งวดนี้</span>}
+                        </td>
+                        <td className="py-1.5 px-3">
+                          <input type="number" min="0" value={row.amount}
+                            onChange={e => onUpdateAmount(idx, +e.target.value || 0)}
+                            className="w-24 px-2 py-1 border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent" />
+                        </td>
+                        <td className="py-1.5 px-3 text-center">
+                          <button onClick={() => onToggleRow(idx)}
+                            className={`text-[10px] font-bold px-2.5 py-1 rounded-full transition-all ${row.paid ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                            {row.paid ? '✓ จ่ายแล้ว' : 'ยังไม่จ่าย'}
+                          </button>
+                        </td>
+                        <td className="py-1.5 px-3 text-right text-slate-500">฿{running.toLocaleString()}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-[10px] text-slate-400 mt-1.5 italic">* คลิกสถานะเพื่อสลับจ่ายแล้ว/ยังไม่จ่าย และแก้ไขจำนวนเงินแต่ละงวดได้โดยตรง</p>
+          </div>
+
+          <div className="flex gap-2 pt-1">
+            <button onClick={() => { onDelete(item.id); onClose(); }}
+              className="text-xs font-bold px-4 py-2.5 rounded-xl border border-rose-200 text-rose-600 hover:bg-rose-50 transition-all">
+              🗑️ ลบรายการนี้
+            </button>
+            <button onClick={onClose}
+              className="ml-auto text-xs font-bold px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition-all shadow-sm">
+              เสร็จสิ้น
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function InstallmentPage({ onBack }) {
+  const [loaded, setLoaded]   = useState(false);
+  const [saving, setSaving]   = useState(false);
+  const [lastSaved, setLastSaved] = useState(null);
+  const [toast, setToast]     = useState('');
+  const [items, setItems]     = useState(INSTALLMENT_DEFAULTS.items);
+  const [detailItemId, setDetailItemId] = useState(null);
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3200); };
+
+  useEffect(() => {
+    cloudLoadInstallments().then(data => {
+      if (data && Array.isArray(data.items)) {
+        setItems(data.items.map(i => ({ ...i, schedule: ensureSchedule(i) })));
+      }
+      if (data && data._savedAt) setLastSaved(data._savedAt);
+      setLoaded(true);
+    });
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    const now = new Date().toLocaleString('th-TH');
+    const ok = await cloudSaveInstallments({ items, _savedAt: now });
+    setSaving(false);
+    setLastSaved(now);
+    showToast(ok
+      ? (FIREBASE_READY ? '☁️ บันทึกออนไลน์เรียบร้อย!' : '💾 บันทึกในเครื่องเรียบร้อย!')
+      : '❌ บันทึกไม่สำเร็จ กรุณาลองใหม่');
+  };
+
+  const addItem = (item) => { setItems(prev => [...prev, item]); showToast('➕ เพิ่มสินค้าแล้ว'); };
+  const deleteItem = (id) => {
+    if (!window.confirm('ลบรายการผ่อนนี้?')) return;
+    setItems(prev => prev.filter(i => i.id !== id));
+  };
+  const payMonth = (id) => setItems(prev => prev.map(i => {
+    if (i.id !== id) return i;
+    const schedule = i.schedule.map(r => ({ ...r }));
+    const idx = schedule.findIndex(r => !r.paid);
+    if (idx === -1) return i;
+    schedule[idx].paid = true;
+    return { ...i, schedule };
+  }));
+  const unpayMonth = (id) => setItems(prev => prev.map(i => {
+    if (i.id !== id) return i;
+    const schedule = i.schedule.map(r => ({ ...r }));
+    let idx = -1;
+    for (let j = schedule.length - 1; j >= 0; j--) { if (schedule[j].paid) { idx = j; break; } }
+    if (idx === -1) return i;
+    schedule[idx].paid = false;
+    return { ...i, schedule };
+  }));
+  const toggleRow = (itemId, rowIdx) => setItems(prev => prev.map(i => {
+    if (i.id !== itemId) return i;
+    const schedule = i.schedule.map((r, idx) => idx === rowIdx ? { ...r, paid: !r.paid } : r);
+    return { ...i, schedule };
+  }));
+  const updateRowAmount = (itemId, rowIdx, amount) => setItems(prev => prev.map(i => {
+    if (i.id !== itemId) return i;
+    const schedule = i.schedule.map((r, idx) => idx === rowIdx ? { ...r, amount } : r);
+    return { ...i, schedule };
+  }));
+
+  // ── Dashboard calculations ──
+  const totalItems    = items.length;
+  const totalValue    = useMemo(() => items.reduce((s, i) => s + i.totalPrice, 0), [items]);
+  const totalPaid     = useMemo(() => items.reduce((s, i) =>
+    s + (i.schedule || []).reduce((ss, r) => ss + (r.paid ? (+r.amount || 0) : 0), 0), 0), [items]);
+  const totalRemaining = Math.max(totalValue - totalPaid, 0);
+  const monthlyTotal   = useMemo(() => items.reduce((s, i) => {
+    const nextRow = (i.schedule || []).find(r => !r.paid);
+    return s + (nextRow ? (+nextRow.amount || 0) : 0);
+  }, 0), [items]);
+  const doneCount = items.filter(i => (i.schedule || []).length > 0 && (i.schedule || []).every(r => r.paid)).length;
+  const overallPct = totalValue > 0 ? Math.min((totalPaid / totalValue) * 100, 100) : 0;
+  const detailItem = detailItemId ? items.find(i => i.id === detailItemId) : null;
+
+  if (!loaded) return (
+    <div className="flex flex-col items-center justify-center min-h-screen gap-4 bg-slate-50">
+      <div className="text-5xl animate-spin">⏳</div>
+      <p className="text-slate-500 font-medium">กำลังโหลดข้อมูล{FIREBASE_READY ? 'จากคลาวด์' : ''}...</p>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-800" style={{ fontFamily: "'Sarabun',sans-serif" }}>
+      <Toast msg={toast} />
+
+      {/* ── HEADER ── */}
+      <header className="bg-gradient-to-r from-amber-500 via-orange-600 to-indigo-800 text-white shadow-xl">
+        <div className="max-w-6xl mx-auto px-4 py-5 sm:px-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <div className="flex flex-wrap gap-2 mb-1.5">
+                <span className="bg-white/20 border border-white/20 text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider">รายการผ่อน</span>
+                <span className={`${FIREBASE_READY ? 'bg-emerald-400/20 border-emerald-400/20 text-emerald-100' : 'bg-amber-900/20 border-amber-900/20 text-amber-100'} border text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider`}>
+                  {FIREBASE_READY ? '☁️ ออนไลน์' : '💾 ออฟไลน์'}
+                </span>
+              </div>
+              <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight flex items-center gap-2">📦 รายการผ่อนสินค้า</h1>
+              <p className="text-amber-100 text-xs mt-1 max-w-xl">
+                ติดตามสินค้าที่กำลังผ่อนทั้งหมดในที่เดียว
+                {lastSaved && <span className="ml-2 text-amber-100/70">· บันทึกล่าสุด: {lastSaved}</span>}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={onBack}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-white/15 hover:bg-white/25 backdrop-blur border border-white/20 active:scale-95 transition-all rounded-xl text-sm font-bold text-white shadow-md">
+                ⬅ กลับหน้าแดชบอร์ด
+              </button>
+              <button onClick={handleSave} disabled={saving}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-white/15 hover:bg-white/25 backdrop-blur border border-white/20 active:scale-95 transition-all rounded-xl text-sm font-bold text-white disabled:opacity-60 shadow-md">
+                {saving ? '⏳ กำลังบันทึก...' : `${FIREBASE_READY ? '☁️' : '💾'} บันทึกข้อมูล`}
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-6xl mx-auto px-4 py-5 sm:px-6 space-y-5">
+
+        {/* ── DASHBOARD SUMMARY ── */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80">
+            <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block">จำนวนสินค้าที่ผ่อน</span>
+            <span className="text-xl sm:text-2xl font-extrabold text-slate-900 block mt-0.5">{totalItems} รายการ</span>
+            <span className="text-[10px] text-emerald-600 font-medium">ผ่อนครบแล้ว {doneCount} รายการ</span>
+          </div>
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80">
+            <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block">ยอดผ่อนรวมทั้งหมด</span>
+            <span className="text-xl sm:text-2xl font-extrabold text-indigo-700 block mt-0.5">฿{totalValue.toLocaleString()}</span>
+            <span className="text-[10px] text-slate-400">ผ่านไปแล้ว {Math.round(overallPct)}%</span>
+          </div>
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80">
+            <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block">ต้องจ่ายรวม/เดือนนี้</span>
+            <span className="text-xl sm:text-2xl font-extrabold text-rose-600 block mt-0.5">฿{Math.round(monthlyTotal).toLocaleString()}</span>
+            <span className="text-[10px] text-slate-400">จากรายการที่ยังผ่อนไม่ครบ</span>
+          </div>
+          <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4">
+            <span className="text-[10px] font-semibold uppercase tracking-wider block text-emerald-700">ผ่อนไปแล้ว / คงเหลือ</span>
+            <span className="text-xl sm:text-2xl font-extrabold text-emerald-700 block mt-0.5">฿{totalPaid.toLocaleString()}</span>
+            <span className="text-[10px] text-rose-600 font-medium">คงเหลือ ฿{totalRemaining.toLocaleString()}</span>
+          </div>
+        </div>
+
+        {/* ── OVERALL PROGRESS ── */}
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4">
+          <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-2.5 mb-3.5">
+            <span className="text-amber-500">📊</span>ความคืบหน้าการผ่อนทั้งหมด
+          </h2>
+          <div className="w-full h-4 bg-slate-100 rounded-full overflow-hidden mb-2">
+            <div className="h-full rounded-full bg-gradient-to-r from-amber-400 via-orange-500 to-indigo-600 transition-all duration-700" style={{ width: `${overallPct}%` }} />
+          </div>
+          <div className="flex justify-between text-xs text-slate-500">
+            <span className="font-extrabold text-slate-800 text-sm">{Math.round(overallPct)}%</span>
+            <span>ผ่อนแล้ว ฿{totalPaid.toLocaleString()} จาก ฿{totalValue.toLocaleString()}</span>
+          </div>
+        </div>
+
+        {/* ── ADD ITEM FORM ── */}
+        <AddInstallmentForm onAdd={addItem} />
+
+        {/* ── ITEM LIST ── */}
+        <div>
+          <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 mb-3">
+            <span className="text-indigo-600">🗂️</span>รายการสินค้าที่กำลังผ่อน
+          </h2>
+          {items.length === 0 ? (
+            <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-8 text-center text-slate-400 text-sm">
+              ยังไม่มีรายการผ่อน — เพิ่มสินค้ารายการแรกได้ที่ฟอร์มด้านบน
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {items.map(item => (
+                <InstallmentCard key={item.id} item={item} onDelete={deleteItem} onPay={payMonth} onUnpay={unpayMonth} onOpenDetail={setDetailItemId} />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* ── SAVE REMINDER BAR ── */}
+        <div className="bg-gradient-to-r from-amber-50 to-indigo-50 border border-amber-100 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex items-start sm:items-center gap-3">
+            <span className="text-2xl flex-shrink-0">{FIREBASE_READY ? '☁️' : '💾'}</span>
+            <div>
+              <p className="text-sm font-bold text-indigo-800">{FIREBASE_READY ? 'บันทึกออนไลน์' : 'บันทึกในเครื่อง'}</p>
+              <p className="text-xs text-indigo-600">แก้ไขข้อมูลแล้ว? กด "บันทึกข้อมูล" เพื่อเซฟ
+                {lastSaved && <span className="ml-1 text-indigo-400">· บันทึกล่าสุด: {lastSaved}</span>}
+              </p>
+            </div>
+          </div>
+          <button onClick={handleSave} disabled={saving}
+            className="flex-shrink-0 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-sm font-bold px-6 py-2.5 rounded-xl transition-all disabled:opacity-60 shadow-md shadow-indigo-200">
+            {saving ? '⏳ กำลังบันทึก...' : `${FIREBASE_READY ? '☁️' : '💾'} บันทึกข้อมูล`}
+          </button>
+        </div>
+
+      </main>
+
+      <footer className="bg-slate-900 text-slate-400 text-xs py-6 mt-6 border-t border-slate-800">
+        <div className="max-w-6xl mx-auto px-4 text-center space-y-2">
+          <p className="font-semibold text-slate-300">📦 รายการผ่อนสินค้า</p>
+          <p className="text-[11px] text-slate-500">
+            {FIREBASE_READY
+              ? '☁️ ข้อมูลบันทึกออนไลน์ผ่าน Firebase · สามารถเข้าถึงได้ทุกอุปกรณ์'
+              : '⚠️ โหมดออฟไลน์ · ข้อมูลบันทึกในเบราว์เซอร์นี้เท่านั้น'}
+          </p>
+        </div>
+      </footer>
+
+      {detailItem && (
+        <InstallmentDetailModal
+          item={detailItem}
+          onClose={() => setDetailItemId(null)}
+          onToggleRow={(rowIdx) => toggleRow(detailItem.id, rowIdx)}
+          onUpdateAmount={(rowIdx, amount) => updateRowAmount(detailItem.id, rowIdx, amount)}
+          onDelete={deleteItem}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Gold Price Box (แสดง/รีเฟรชราคาทองปัจจุบัน) ──
+function GoldPriceBox({ goldPriceBar, goldPriceJewelry, goldPriceUpdatedText, priceLoading, priceError, onRefresh, onManualChange }) {
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4">
+      <div className="flex items-center justify-between border-b border-slate-100 pb-2.5 mb-3.5">
+        <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+          <span className="text-amber-500">📈</span>ราคาทองคำอ้างอิง (รับซื้อ)
+        </h2>
+        <button onClick={onRefresh} disabled={priceLoading}
+          className="inline-flex items-center gap-1 text-xs font-bold text-indigo-600 hover:text-indigo-500 disabled:opacity-50">
+          {priceLoading ? '⏳ กำลังโหลด...' : '🔄 รีเฟรชราคา'}
+        </button>
+      </div>
+      {priceError && (
+        <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 mb-3">
+          ⚠️ ดึงราคาทองอัตโนมัติไม่สำเร็จ (อาจเป็นเพราะเน็ตหรือ CORS) — กรอกราคาเองด้านล่างได้เลย
+        </p>
+      )}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label className="text-[10px] font-semibold text-slate-500 block mb-1">🥇 ทองคำแท่ง 96.5% (บาทละ)</label>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs">฿</span>
+            <input type="number" min="0" value={goldPriceBar}
+              onChange={e => onManualChange('bar', +e.target.value || 0)}
+              className="w-full pl-7 pr-2 py-2 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-amber-400 focus:border-amber-400 outline-none transition-all font-bold" />
+          </div>
+        </div>
+        <div>
+          <label className="text-[10px] font-semibold text-slate-500 block mb-1">📿 ทองรูปพรรณ 96.5% (บาทละ)</label>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs">฿</span>
+            <input type="number" min="0" value={goldPriceJewelry}
+              onChange={e => onManualChange('jewelry', +e.target.value || 0)}
+              className="w-full pl-7 pr-2 py-2 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-amber-400 focus:border-amber-400 outline-none transition-all font-bold" />
+          </div>
+        </div>
+      </div>
+      <p className="text-[10px] text-slate-400 mt-2.5">
+        {goldPriceUpdatedText ? `อัปเดตจากสมาคมค้าทองคำ: ${goldPriceUpdatedText}` : 'แก้ไขราคาเองได้ถ้าต้องการอ้างอิงราคาอื่น'} · ใช้ราคา "รับซื้อ" ในการคำนวณมูลค่าทรัพย์สิน
+      </p>
+    </div>
+  );
+}
+
+// ── Add Cash Form ──
+function AddCashForm({ onAdd }) {
+  const [name, setName] = useState('');
+  const [amount, setAmount] = useState('');
+  const submit = () => {
+    if (!name.trim() || !amount) return;
+    onAdd({ id: Date.now(), name: name.trim(), amount: +amount || 0 });
+    setName(''); setAmount('');
+  };
+  return (
+    <div className="flex gap-1.5">
+      <input type="text" placeholder="เช่น บัญชีออมทรัพย์, เงินสด" value={name} onChange={e => setName(e.target.value)}
+        className="flex-1 text-xs border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-emerald-400 focus:border-emerald-400 transition-all" />
+      <input type="number" placeholder="฿" value={amount} onChange={e => setAmount(e.target.value)}
+        className="w-24 text-xs border border-slate-200 rounded-xl px-2 py-2 outline-none focus:ring-2 focus:ring-emerald-400 focus:border-emerald-400 transition-all text-center" />
+      <button onClick={submit}
+        className="bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-white text-xs px-3 py-2 rounded-xl font-bold transition-all whitespace-nowrap">+ เพิ่ม</button>
+    </div>
+  );
+}
+
+// ── Add Gold Form ──
+function AddGoldForm({ onAdd }) {
+  const [type, setType] = useState('bar');
+  const [label, setLabel] = useState('');
+  const [weight, setWeight] = useState('');
+  const submit = () => {
+    const w = +weight;
+    if (!(w > 0)) return;
+    onAdd({ id: Date.now(), type, label: label.trim(), weight: w });
+    setLabel(''); setWeight('');
+  };
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+      <select value={type} onChange={e => setType(e.target.value)}
+        className="text-xs border border-slate-200 rounded-xl px-2 py-2 outline-none focus:ring-2 focus:ring-amber-400 focus:border-amber-400 transition-all bg-white">
+        {Object.entries(GOLD_TYPES).map(([k, v]) => <option key={k} value={k}>{v.emoji} {v.label}</option>)}
+      </select>
+      <input type="text" placeholder="รายละเอียด เช่น สร้อยคอ, แหวน (ไม่บังคับ)" value={label} onChange={e => setLabel(e.target.value)}
+        className="sm:col-span-2 text-xs border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-amber-400 focus:border-amber-400 transition-all" />
+      <div className="flex gap-1.5">
+        <input type="number" min="0" step="0.01" placeholder="น้ำหนัก (บาท)" value={weight} onChange={e => setWeight(e.target.value)}
+          className="flex-1 text-xs border border-slate-200 rounded-xl px-2 py-2 outline-none focus:ring-2 focus:ring-amber-400 focus:border-amber-400 transition-all text-center" />
+        <button onClick={submit}
+          className="bg-amber-500 hover:bg-amber-400 active:scale-95 text-white text-xs px-3 py-2 rounded-xl font-bold transition-all whitespace-nowrap">+ เพิ่ม</button>
+      </div>
+    </div>
+  );
+}
+
+function AssetsPage({ onBack }) {
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [lastSaved, setLastSaved] = useState(null);
+  const [toast, setToast] = useState('');
+
+  const [cashItems, setCashItems] = useState(ASSET_DEFAULTS.cashItems);
+  const [goldItems, setGoldItems] = useState(ASSET_DEFAULTS.goldItems);
+  const [goldPriceBar, setGoldPriceBar] = useState(ASSET_DEFAULTS.goldPriceBar);
+  const [goldPriceJewelry, setGoldPriceJewelry] = useState(ASSET_DEFAULTS.goldPriceJewelry);
+  const [goldPriceUpdatedText, setGoldPriceUpdatedText] = useState(ASSET_DEFAULTS.goldPriceUpdatedText);
+  const [priceLoading, setPriceLoading] = useState(false);
+  const [priceError, setPriceError] = useState(false);
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3200); };
+
+  const refreshGoldPrice = async () => {
+    setPriceLoading(true);
+    setPriceError(false);
+    try {
+      const p = await fetchGoldPrice();
+      setGoldPriceBar(p.barBuy);
+      setGoldPriceJewelry(p.jewelryBuy);
+      setGoldPriceUpdatedText(`${p.updateDate} ${p.updateTime}`);
+      showToast('📈 อัปเดตราคาทองล่าสุดแล้ว');
+    } catch (e) {
+      setPriceError(true);
+    }
+    setPriceLoading(false);
+  };
+
+  useEffect(() => {
+    cloudLoadAssets().then(data => {
+      if (data) {
+        if (Array.isArray(data.cashItems)) setCashItems(data.cashItems);
+        if (Array.isArray(data.goldItems)) setGoldItems(data.goldItems);
+        if (data.goldPriceBar) setGoldPriceBar(data.goldPriceBar);
+        if (data.goldPriceJewelry) setGoldPriceJewelry(data.goldPriceJewelry);
+        if (data.goldPriceUpdatedText) setGoldPriceUpdatedText(data.goldPriceUpdatedText);
+        if (data._savedAt) setLastSaved(data._savedAt);
+      }
+      setLoaded(true);
+      refreshGoldPrice();
+    });
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    const now = new Date().toLocaleString('th-TH');
+    const ok = await cloudSaveAssets({ cashItems, goldItems, goldPriceBar, goldPriceJewelry, goldPriceUpdatedText, _savedAt: now });
+    setSaving(false);
+    setLastSaved(now);
+    showToast(ok
+      ? (FIREBASE_READY ? '☁️ บันทึกออนไลน์เรียบร้อย!' : '💾 บันทึกในเครื่องเรียบร้อย!')
+      : '❌ บันทึกไม่สำเร็จ กรุณาลองใหม่');
+  };
+
+  const addCash = (item) => { setCashItems(prev => [...prev, item]); showToast('➕ เพิ่มรายการเงินแล้ว'); };
+  const deleteCash = (id) => setCashItems(prev => prev.filter(i => i.id !== id));
+
+  const addGold = (item) => { setGoldItems(prev => [...prev, item]); showToast('➕ เพิ่มรายการทองแล้ว'); };
+  const deleteGold = (id) => setGoldItems(prev => prev.filter(i => i.id !== id));
+
+  const handleManualPriceChange = (kind, val) => {
+    if (kind === 'bar') setGoldPriceBar(val); else setGoldPriceJewelry(val);
+  };
+
+  // ── Calculations ──
+  const totalCash = useMemo(() => cashItems.reduce((s, i) => s + (+i.amount || 0), 0), [cashItems]);
+  const goldValueOf = (item) => (item.type === 'jewelry' ? goldPriceJewelry : goldPriceBar) * (+item.weight || 0);
+  const totalGold = useMemo(() => goldItems.reduce((s, i) => s + goldValueOf(i), 0), [goldItems, goldPriceBar, goldPriceJewelry]);
+  const totalGoldWeight = useMemo(() => goldItems.reduce((s, i) => s + (+i.weight || 0), 0), [goldItems]);
+  const grandTotal = totalCash + totalGold;
+  const cashPct = grandTotal > 0 ? Math.round((totalCash / grandTotal) * 100) : 0;
+  const goldPct = grandTotal > 0 ? 100 - cashPct : 0;
+
+  if (!loaded) return (
+    <div className="flex flex-col items-center justify-center min-h-screen gap-4 bg-slate-50">
+      <div className="text-5xl animate-spin">⏳</div>
+      <p className="text-slate-500 font-medium">กำลังโหลดข้อมูล{FIREBASE_READY ? 'จากคลาวด์' : ''}...</p>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-800" style={{ fontFamily: "'Sarabun',sans-serif" }}>
+      <Toast msg={toast} />
+
+      {/* ── HEADER ── */}
+      <header className="bg-gradient-to-r from-yellow-500 via-amber-600 to-indigo-800 text-white shadow-xl">
+        <div className="max-w-6xl mx-auto px-4 py-5 sm:px-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <div className="flex flex-wrap gap-2 mb-1.5">
+                <span className="bg-white/20 border border-white/20 text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider">ทรัพย์สิน</span>
+                <span className={`${FIREBASE_READY ? 'bg-emerald-400/20 border-emerald-400/20 text-emerald-100' : 'bg-amber-900/20 border-amber-900/20 text-amber-100'} border text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider`}>
+                  {FIREBASE_READY ? '☁️ ออนไลน์' : '💾 ออฟไลน์'}
+                </span>
+              </div>
+              <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight flex items-center gap-2">💎 รวบรวมทรัพย์สิน เงิน & ทอง</h1>
+              <p className="text-amber-100 text-xs mt-1 max-w-xl">
+                สรุปมูลค่าเงินสดและทองคำทั้งหมดในที่เดียว
+                {lastSaved && <span className="ml-2 text-amber-100/70">· บันทึกล่าสุด: {lastSaved}</span>}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={onBack}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-white/15 hover:bg-white/25 backdrop-blur border border-white/20 active:scale-95 transition-all rounded-xl text-sm font-bold text-white shadow-md">
+                ⬅ กลับหน้าแดชบอร์ด
+              </button>
+              <button onClick={handleSave} disabled={saving}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-white/15 hover:bg-white/25 backdrop-blur border border-white/20 active:scale-95 transition-all rounded-xl text-sm font-bold text-white disabled:opacity-60 shadow-md">
+                {saving ? '⏳ กำลังบันทึก...' : `${FIREBASE_READY ? '☁️' : '💾'} บันทึกข้อมูล`}
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-6xl mx-auto px-4 py-5 sm:px-6 space-y-5">
+
+        {/* ── ยอดรวมใหญ่ ── */}
+        <div className="bg-gradient-to-br from-indigo-900 via-slate-900 to-amber-900 rounded-2xl shadow-xl p-6 sm:p-8 text-center text-white">
+          <p className="text-xs sm:text-sm font-semibold text-amber-200 uppercase tracking-widest mb-2">มูลค่าทรัพย์สินรวมทั้งหมด</p>
+          <p className="text-4xl sm:text-6xl font-extrabold tracking-tight">฿{Math.round(grandTotal).toLocaleString()}</p>
+          <div className="flex justify-center gap-4 sm:gap-8 mt-4 text-xs sm:text-sm">
+            <span className="text-emerald-300">💵 เงินสด ฿{totalCash.toLocaleString()} ({cashPct}%)</span>
+            <span className="text-amber-300">🥇 ทองคำ ฿{Math.round(totalGold).toLocaleString()} ({goldPct}%)</span>
+          </div>
+          {grandTotal > 0 && (
+            <div className="w-full h-2.5 bg-white/10 rounded-full overflow-hidden mt-4 max-w-md mx-auto flex">
+              <div className="h-full bg-emerald-400" style={{ width: `${cashPct}%` }} />
+              <div className="h-full bg-amber-400" style={{ width: `${goldPct}%` }} />
+            </div>
+          )}
+        </div>
+
+        {/* ── SUMMARY CARDS ── */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80">
+            <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block">💵 รวมเงินสด</span>
+            <span className="text-xl sm:text-2xl font-extrabold text-emerald-700 block mt-0.5">฿{totalCash.toLocaleString()}</span>
+            <span className="text-[10px] text-slate-400">{cashItems.length} บัญชี/รายการ</span>
+          </div>
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80">
+            <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block">🥇 รวมทองคำ</span>
+            <span className="text-xl sm:text-2xl font-extrabold text-amber-700 block mt-0.5">฿{Math.round(totalGold).toLocaleString()}</span>
+            <span className="text-[10px] text-slate-400">{totalGoldWeight.toLocaleString()} บาททองคำ</span>
+          </div>
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80">
+            <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block">🥇 ราคาทองแท่ง/บาท</span>
+            <span className="text-xl sm:text-2xl font-extrabold text-slate-900 block mt-0.5">฿{goldPriceBar.toLocaleString()}</span>
+            <span className="text-[10px] text-slate-400">ราคารับซื้อปัจจุบัน</span>
+          </div>
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80">
+            <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block">📿 ราคาทองรูปพรรณ/บาท</span>
+            <span className="text-xl sm:text-2xl font-extrabold text-slate-900 block mt-0.5">฿{goldPriceJewelry.toLocaleString()}</span>
+            <span className="text-[10px] text-slate-400">ราคารับซื้อปัจจุบัน</span>
+          </div>
+        </div>
+
+        {/* ── ราคาทองอ้างอิง ── */}
+        <GoldPriceBox
+          goldPriceBar={goldPriceBar} goldPriceJewelry={goldPriceJewelry}
+          goldPriceUpdatedText={goldPriceUpdatedText} priceLoading={priceLoading} priceError={priceError}
+          onRefresh={refreshGoldPrice} onManualChange={handleManualPriceChange}
+        />
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          {/* ── เงินสด ── */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4">
+            <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-2.5 mb-3.5">
+              <span className="text-emerald-600">💵</span>รายการเงินสด / เงินฝาก
+            </h2>
+            <div className="space-y-2 mb-3 max-h-64 overflow-y-auto scrollbar-thin">
+              {cashItems.map(item => (
+                <div key={item.id} className="flex justify-between items-center text-xs bg-slate-50 hover:bg-slate-100 transition-colors rounded-xl px-3 py-2 border border-slate-100">
+                  <span className="font-medium text-slate-700 flex-1 min-w-0 truncate">{item.name}</span>
+                  <div className="flex items-center gap-2 ml-2 flex-shrink-0">
+                    <span className="font-bold text-slate-900">฿{(+item.amount || 0).toLocaleString()}</span>
+                    <button onClick={() => deleteCash(item.id)}
+                      className="text-slate-300 hover:text-rose-500 transition-colors w-4 h-4 flex items-center justify-center">✕</button>
+                  </div>
+                </div>
+              ))}
+              {cashItems.length === 0 && <p className="text-xs text-slate-400 italic text-center py-2">ยังไม่มีรายการเงินสด — เพิ่มรายการแรกด้านล่าง</p>}
+            </div>
+            <AddCashForm onAdd={addCash} />
+            <div className="mt-3 flex justify-between text-xs pt-2.5 border-t border-slate-100">
+              <span className="text-slate-500 font-medium">รวมเงินสดทั้งหมด</span>
+              <span className="font-extrabold text-emerald-600">฿{totalCash.toLocaleString()}</span>
+            </div>
+          </div>
+
+          {/* ── ทองคำ ── */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4">
+            <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-2.5 mb-3.5">
+              <span className="text-amber-500">🥇</span>รายการทองคำ
+            </h2>
+            <div className="space-y-2 mb-3 max-h-64 overflow-y-auto scrollbar-thin">
+              {goldItems.map(item => (
+                <div key={item.id} className="flex justify-between items-center text-xs bg-slate-50 hover:bg-slate-100 transition-colors rounded-xl px-3 py-2 border border-slate-100">
+                  <div className="flex-1 min-w-0">
+                    <span className="font-medium text-slate-700 block truncate">
+                      {GOLD_TYPES[item.type]?.emoji} {item.label || GOLD_TYPES[item.type]?.label}
+                    </span>
+                    <span className="text-[10px] text-slate-400">{item.weight} บาททองคำ · {GOLD_TYPES[item.type]?.label}</span>
+                  </div>
+                  <div className="flex items-center gap-2 ml-2 flex-shrink-0">
+                    <span className="font-bold text-slate-900">฿{Math.round(goldValueOf(item)).toLocaleString()}</span>
+                    <button onClick={() => deleteGold(item.id)}
+                      className="text-slate-300 hover:text-rose-500 transition-colors w-4 h-4 flex items-center justify-center">✕</button>
+                  </div>
+                </div>
+              ))}
+              {goldItems.length === 0 && <p className="text-xs text-slate-400 italic text-center py-2">ยังไม่มีรายการทองคำ — เพิ่มรายการแรกด้านล่าง</p>}
+            </div>
+            <AddGoldForm onAdd={addGold} />
+            <div className="mt-3 flex justify-between text-xs pt-2.5 border-t border-slate-100">
+              <span className="text-slate-500 font-medium">รวมทองคำทั้งหมด ({totalGoldWeight.toLocaleString()} บาท)</span>
+              <span className="font-extrabold text-amber-600">฿{Math.round(totalGold).toLocaleString()}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* ── SAVE REMINDER BAR ── */}
+        <div className="bg-gradient-to-r from-amber-50 to-indigo-50 border border-amber-100 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex items-start sm:items-center gap-3">
+            <span className="text-2xl flex-shrink-0">{FIREBASE_READY ? '☁️' : '💾'}</span>
+            <div>
+              <p className="text-sm font-bold text-indigo-800">{FIREBASE_READY ? 'บันทึกออนไลน์' : 'บันทึกในเครื่อง'}</p>
+              <p className="text-xs text-indigo-600">แก้ไขข้อมูลแล้ว? กด "บันทึกข้อมูล" เพื่อเซฟ
+                {lastSaved && <span className="ml-1 text-indigo-400">· บันทึกล่าสุด: {lastSaved}</span>}
+              </p>
+            </div>
+          </div>
+          <button onClick={handleSave} disabled={saving}
+            className="flex-shrink-0 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-sm font-bold px-6 py-2.5 rounded-xl transition-all disabled:opacity-60 shadow-md shadow-indigo-200">
+            {saving ? '⏳ กำลังบันทึก...' : `${FIREBASE_READY ? '☁️' : '💾'} บันทึกข้อมูล`}
+          </button>
+        </div>
+
+      </main>
+
+      <footer className="bg-slate-900 text-slate-400 text-xs py-6 mt-6 border-t border-slate-800">
+        <div className="max-w-6xl mx-auto px-4 text-center space-y-2">
+          <p className="font-semibold text-slate-300">💎 รวบรวมทรัพย์สิน เงิน & ทอง</p>
+          <p className="text-[11px] text-slate-500">
+            ราคาทองอ้างอิงจากสมาคมค้าทองคำ (goldtraders.or.th) ผ่าน API สาธารณะ อาจคลาดเคลื่อนจากราคาจริง ณ เวลาซื้อขายเล็กน้อย
+          </p>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+</body>
+</html>
