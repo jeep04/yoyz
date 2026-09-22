@@ -130,6 +130,48 @@ async function cloudSaveInstallments(data) {
     db.ref('installments/' + USER_KEY).set(data, err => resolve(!err));
   });
 }
+
+// ── Cloud storage helpers สำหรับหน้า "ทรัพย์สิน" (เงิน + ทอง) ──
+async function cloudLoadAssets() {
+  if (!db) {
+    try {
+      const raw = localStorage.getItem('jib_assets_v1_' + USER_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+  return new Promise((resolve) => {
+    db.ref('assets/' + USER_KEY).once('value', snap => {
+      resolve(snap.exists() ? snap.val() : null);
+    }, () => resolve(null));
+  });
+}
+
+async function cloudSaveAssets(data) {
+  if (!db) {
+    try { localStorage.setItem('jib_assets_v1_' + USER_KEY, JSON.stringify(data)); } catch {}
+    return true;
+  }
+  return new Promise((resolve) => {
+    db.ref('assets/' + USER_KEY).set(data, err => resolve(!err));
+  });
+}
+
+// ── ดึงราคาทองคำปัจจุบัน (สมาคมค้าทองคำไทย) ──
+async function fetchGoldPrice() {
+  const res = await fetch('https://api.chnwt.dev/thai-gold-api/latest');
+  if (!res.ok) throw new Error('bad response');
+  const json = await res.json();
+  if (json.status !== 'success') throw new Error('api error');
+  const num = (s) => parseFloat(String(s).replace(/,/g, '')) || 0;
+  return {
+    barBuy: num(json.response.price.gold_bar.buy),
+    barSell: num(json.response.price.gold_bar.sell),
+    jewelryBuy: num(json.response.price.gold.buy),
+    jewelrySell: num(json.response.price.gold.sell),
+    updateDate: json.response.update_date,
+    updateTime: json.response.update_time,
+  };
+}
 </script>
 
 <script type="text/babel">
@@ -202,7 +244,7 @@ function SetupBanner() {
 
 // ── Main App ──
 function App() {
-  const [page, setPage] = useState('home'); // 'home' | 'installments'
+  const [page, setPage] = useState('home'); // 'home' | 'installments' | 'assets'
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState(null);
@@ -337,6 +379,10 @@ function App() {
     return <InstallmentPage onBack={() => setPage('home')} />;
   }
 
+  if (page === 'assets') {
+    return <AssetsPage onBack={() => setPage('home')} />;
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800" style={{fontFamily:"'Sarabun',sans-serif"}}>
       <Toast msg={toast} />
@@ -362,6 +408,10 @@ function App() {
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
+              <button onClick={() => setPage('assets')}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-yellow-400 hover:bg-yellow-300 active:scale-95 transition-all rounded-xl text-sm font-bold text-slate-900 shadow-md">
+                💎 ทรัพย์สิน
+              </button>
               <button onClick={() => setPage('installments')}
                 className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-amber-400 hover:bg-amber-300 active:scale-95 transition-all rounded-xl text-sm font-bold text-slate-900 shadow-md">
                 📦 รายการผ่อน
@@ -822,6 +872,19 @@ function resizeImageFile(file) {
 }
 
 const INSTALLMENT_DEFAULTS = { items: [] };
+
+// ── Defaults สำหรับหน้า "ทรัพย์สิน" ──
+const ASSET_DEFAULTS = {
+  cashItems: [],
+  goldItems: [],
+  goldPriceBar: 0,
+  goldPriceJewelry: 0,
+  goldPriceUpdatedText: '',
+};
+const GOLD_TYPES = {
+  bar:     { label: 'ทองคำแท่ง 96.5%',   emoji: '🥇' },
+  jewelry: { label: 'ทองรูปพรรณ 96.5%', emoji: '📿' },
+};
 
 // ── สร้างตารางผ่อนเริ่มต้น: แบ่งยอดรวมเท่าๆ กันตามจำนวนเดือน (เศษไปรวมงวดสุดท้าย) ──
 function buildSchedule(totalPrice, months) {
@@ -1302,6 +1365,356 @@ function InstallmentPage({ onBack }) {
           onDelete={deleteItem}
         />
       )}
+    </div>
+  );
+}
+
+// ── Gold Price Box (แสดง/รีเฟรชราคาทองปัจจุบัน) ──
+function GoldPriceBox({ goldPriceBar, goldPriceJewelry, goldPriceUpdatedText, priceLoading, priceError, onRefresh, onManualChange }) {
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4">
+      <div className="flex items-center justify-between border-b border-slate-100 pb-2.5 mb-3.5">
+        <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+          <span className="text-amber-500">📈</span>ราคาทองคำอ้างอิง (รับซื้อ)
+        </h2>
+        <button onClick={onRefresh} disabled={priceLoading}
+          className="inline-flex items-center gap-1 text-xs font-bold text-indigo-600 hover:text-indigo-500 disabled:opacity-50">
+          {priceLoading ? '⏳ กำลังโหลด...' : '🔄 รีเฟรชราคา'}
+        </button>
+      </div>
+      {priceError && (
+        <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 mb-3">
+          ⚠️ ดึงราคาทองอัตโนมัติไม่สำเร็จ (อาจเป็นเพราะเน็ตหรือ CORS) — กรอกราคาเองด้านล่างได้เลย
+        </p>
+      )}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label className="text-[10px] font-semibold text-slate-500 block mb-1">🥇 ทองคำแท่ง 96.5% (บาทละ)</label>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs">฿</span>
+            <input type="number" min="0" value={goldPriceBar}
+              onChange={e => onManualChange('bar', +e.target.value || 0)}
+              className="w-full pl-7 pr-2 py-2 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-amber-400 focus:border-amber-400 outline-none transition-all font-bold" />
+          </div>
+        </div>
+        <div>
+          <label className="text-[10px] font-semibold text-slate-500 block mb-1">📿 ทองรูปพรรณ 96.5% (บาทละ)</label>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs">฿</span>
+            <input type="number" min="0" value={goldPriceJewelry}
+              onChange={e => onManualChange('jewelry', +e.target.value || 0)}
+              className="w-full pl-7 pr-2 py-2 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-amber-400 focus:border-amber-400 outline-none transition-all font-bold" />
+          </div>
+        </div>
+      </div>
+      <p className="text-[10px] text-slate-400 mt-2.5">
+        {goldPriceUpdatedText ? `อัปเดตจากสมาคมค้าทองคำ: ${goldPriceUpdatedText}` : 'แก้ไขราคาเองได้ถ้าต้องการอ้างอิงราคาอื่น'} · ใช้ราคา "รับซื้อ" ในการคำนวณมูลค่าทรัพย์สิน
+      </p>
+    </div>
+  );
+}
+
+// ── Add Cash Form ──
+function AddCashForm({ onAdd }) {
+  const [name, setName] = useState('');
+  const [amount, setAmount] = useState('');
+  const submit = () => {
+    if (!name.trim() || !amount) return;
+    onAdd({ id: Date.now(), name: name.trim(), amount: +amount || 0 });
+    setName(''); setAmount('');
+  };
+  return (
+    <div className="flex gap-1.5">
+      <input type="text" placeholder="เช่น บัญชีออมทรัพย์, เงินสด" value={name} onChange={e => setName(e.target.value)}
+        className="flex-1 text-xs border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-emerald-400 focus:border-emerald-400 transition-all" />
+      <input type="number" placeholder="฿" value={amount} onChange={e => setAmount(e.target.value)}
+        className="w-24 text-xs border border-slate-200 rounded-xl px-2 py-2 outline-none focus:ring-2 focus:ring-emerald-400 focus:border-emerald-400 transition-all text-center" />
+      <button onClick={submit}
+        className="bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-white text-xs px-3 py-2 rounded-xl font-bold transition-all whitespace-nowrap">+ เพิ่ม</button>
+    </div>
+  );
+}
+
+// ── Add Gold Form ──
+function AddGoldForm({ onAdd }) {
+  const [type, setType] = useState('bar');
+  const [label, setLabel] = useState('');
+  const [weight, setWeight] = useState('');
+  const submit = () => {
+    const w = +weight;
+    if (!(w > 0)) return;
+    onAdd({ id: Date.now(), type, label: label.trim(), weight: w });
+    setLabel(''); setWeight('');
+  };
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+      <select value={type} onChange={e => setType(e.target.value)}
+        className="text-xs border border-slate-200 rounded-xl px-2 py-2 outline-none focus:ring-2 focus:ring-amber-400 focus:border-amber-400 transition-all bg-white">
+        {Object.entries(GOLD_TYPES).map(([k, v]) => <option key={k} value={k}>{v.emoji} {v.label}</option>)}
+      </select>
+      <input type="text" placeholder="รายละเอียด เช่น สร้อยคอ, แหวน (ไม่บังคับ)" value={label} onChange={e => setLabel(e.target.value)}
+        className="sm:col-span-2 text-xs border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-amber-400 focus:border-amber-400 transition-all" />
+      <div className="flex gap-1.5">
+        <input type="number" min="0" step="0.01" placeholder="น้ำหนัก (บาท)" value={weight} onChange={e => setWeight(e.target.value)}
+          className="flex-1 text-xs border border-slate-200 rounded-xl px-2 py-2 outline-none focus:ring-2 focus:ring-amber-400 focus:border-amber-400 transition-all text-center" />
+        <button onClick={submit}
+          className="bg-amber-500 hover:bg-amber-400 active:scale-95 text-white text-xs px-3 py-2 rounded-xl font-bold transition-all whitespace-nowrap">+ เพิ่ม</button>
+      </div>
+    </div>
+  );
+}
+
+function AssetsPage({ onBack }) {
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [lastSaved, setLastSaved] = useState(null);
+  const [toast, setToast] = useState('');
+
+  const [cashItems, setCashItems] = useState(ASSET_DEFAULTS.cashItems);
+  const [goldItems, setGoldItems] = useState(ASSET_DEFAULTS.goldItems);
+  const [goldPriceBar, setGoldPriceBar] = useState(ASSET_DEFAULTS.goldPriceBar);
+  const [goldPriceJewelry, setGoldPriceJewelry] = useState(ASSET_DEFAULTS.goldPriceJewelry);
+  const [goldPriceUpdatedText, setGoldPriceUpdatedText] = useState(ASSET_DEFAULTS.goldPriceUpdatedText);
+  const [priceLoading, setPriceLoading] = useState(false);
+  const [priceError, setPriceError] = useState(false);
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3200); };
+
+  const refreshGoldPrice = async () => {
+    setPriceLoading(true);
+    setPriceError(false);
+    try {
+      const p = await fetchGoldPrice();
+      setGoldPriceBar(p.barBuy);
+      setGoldPriceJewelry(p.jewelryBuy);
+      setGoldPriceUpdatedText(`${p.updateDate} ${p.updateTime}`);
+      showToast('📈 อัปเดตราคาทองล่าสุดแล้ว');
+    } catch (e) {
+      setPriceError(true);
+    }
+    setPriceLoading(false);
+  };
+
+  useEffect(() => {
+    cloudLoadAssets().then(data => {
+      if (data) {
+        if (Array.isArray(data.cashItems)) setCashItems(data.cashItems);
+        if (Array.isArray(data.goldItems)) setGoldItems(data.goldItems);
+        if (data.goldPriceBar) setGoldPriceBar(data.goldPriceBar);
+        if (data.goldPriceJewelry) setGoldPriceJewelry(data.goldPriceJewelry);
+        if (data.goldPriceUpdatedText) setGoldPriceUpdatedText(data.goldPriceUpdatedText);
+        if (data._savedAt) setLastSaved(data._savedAt);
+      }
+      setLoaded(true);
+      refreshGoldPrice();
+    });
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    const now = new Date().toLocaleString('th-TH');
+    const ok = await cloudSaveAssets({ cashItems, goldItems, goldPriceBar, goldPriceJewelry, goldPriceUpdatedText, _savedAt: now });
+    setSaving(false);
+    setLastSaved(now);
+    showToast(ok
+      ? (FIREBASE_READY ? '☁️ บันทึกออนไลน์เรียบร้อย!' : '💾 บันทึกในเครื่องเรียบร้อย!')
+      : '❌ บันทึกไม่สำเร็จ กรุณาลองใหม่');
+  };
+
+  const addCash = (item) => { setCashItems(prev => [...prev, item]); showToast('➕ เพิ่มรายการเงินแล้ว'); };
+  const deleteCash = (id) => setCashItems(prev => prev.filter(i => i.id !== id));
+
+  const addGold = (item) => { setGoldItems(prev => [...prev, item]); showToast('➕ เพิ่มรายการทองแล้ว'); };
+  const deleteGold = (id) => setGoldItems(prev => prev.filter(i => i.id !== id));
+
+  const handleManualPriceChange = (kind, val) => {
+    if (kind === 'bar') setGoldPriceBar(val); else setGoldPriceJewelry(val);
+  };
+
+  // ── Calculations ──
+  const totalCash = useMemo(() => cashItems.reduce((s, i) => s + (+i.amount || 0), 0), [cashItems]);
+  const goldValueOf = (item) => (item.type === 'jewelry' ? goldPriceJewelry : goldPriceBar) * (+item.weight || 0);
+  const totalGold = useMemo(() => goldItems.reduce((s, i) => s + goldValueOf(i), 0), [goldItems, goldPriceBar, goldPriceJewelry]);
+  const totalGoldWeight = useMemo(() => goldItems.reduce((s, i) => s + (+i.weight || 0), 0), [goldItems]);
+  const grandTotal = totalCash + totalGold;
+  const cashPct = grandTotal > 0 ? Math.round((totalCash / grandTotal) * 100) : 0;
+  const goldPct = grandTotal > 0 ? 100 - cashPct : 0;
+
+  if (!loaded) return (
+    <div className="flex flex-col items-center justify-center min-h-screen gap-4 bg-slate-50">
+      <div className="text-5xl animate-spin">⏳</div>
+      <p className="text-slate-500 font-medium">กำลังโหลดข้อมูล{FIREBASE_READY ? 'จากคลาวด์' : ''}...</p>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-800" style={{ fontFamily: "'Sarabun',sans-serif" }}>
+      <Toast msg={toast} />
+
+      {/* ── HEADER ── */}
+      <header className="bg-gradient-to-r from-yellow-500 via-amber-600 to-indigo-800 text-white shadow-xl">
+        <div className="max-w-6xl mx-auto px-4 py-5 sm:px-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <div className="flex flex-wrap gap-2 mb-1.5">
+                <span className="bg-white/20 border border-white/20 text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider">ทรัพย์สิน</span>
+                <span className={`${FIREBASE_READY ? 'bg-emerald-400/20 border-emerald-400/20 text-emerald-100' : 'bg-amber-900/20 border-amber-900/20 text-amber-100'} border text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider`}>
+                  {FIREBASE_READY ? '☁️ ออนไลน์' : '💾 ออฟไลน์'}
+                </span>
+              </div>
+              <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight flex items-center gap-2">💎 รวบรวมทรัพย์สิน เงิน & ทอง</h1>
+              <p className="text-amber-100 text-xs mt-1 max-w-xl">
+                สรุปมูลค่าเงินสดและทองคำทั้งหมดในที่เดียว
+                {lastSaved && <span className="ml-2 text-amber-100/70">· บันทึกล่าสุด: {lastSaved}</span>}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={onBack}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-white/15 hover:bg-white/25 backdrop-blur border border-white/20 active:scale-95 transition-all rounded-xl text-sm font-bold text-white shadow-md">
+                ⬅ กลับหน้าแดชบอร์ด
+              </button>
+              <button onClick={handleSave} disabled={saving}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-white/15 hover:bg-white/25 backdrop-blur border border-white/20 active:scale-95 transition-all rounded-xl text-sm font-bold text-white disabled:opacity-60 shadow-md">
+                {saving ? '⏳ กำลังบันทึก...' : `${FIREBASE_READY ? '☁️' : '💾'} บันทึกข้อมูล`}
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-6xl mx-auto px-4 py-5 sm:px-6 space-y-5">
+
+        {/* ── ยอดรวมใหญ่ ── */}
+        <div className="bg-gradient-to-br from-indigo-900 via-slate-900 to-amber-900 rounded-2xl shadow-xl p-6 sm:p-8 text-center text-white">
+          <p className="text-xs sm:text-sm font-semibold text-amber-200 uppercase tracking-widest mb-2">มูลค่าทรัพย์สินรวมทั้งหมด</p>
+          <p className="text-4xl sm:text-6xl font-extrabold tracking-tight">฿{Math.round(grandTotal).toLocaleString()}</p>
+          <div className="flex justify-center gap-4 sm:gap-8 mt-4 text-xs sm:text-sm">
+            <span className="text-emerald-300">💵 เงินสด ฿{totalCash.toLocaleString()} ({cashPct}%)</span>
+            <span className="text-amber-300">🥇 ทองคำ ฿{Math.round(totalGold).toLocaleString()} ({goldPct}%)</span>
+          </div>
+          {grandTotal > 0 && (
+            <div className="w-full h-2.5 bg-white/10 rounded-full overflow-hidden mt-4 max-w-md mx-auto flex">
+              <div className="h-full bg-emerald-400" style={{ width: `${cashPct}%` }} />
+              <div className="h-full bg-amber-400" style={{ width: `${goldPct}%` }} />
+            </div>
+          )}
+        </div>
+
+        {/* ── SUMMARY CARDS ── */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80">
+            <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block">💵 รวมเงินสด</span>
+            <span className="text-xl sm:text-2xl font-extrabold text-emerald-700 block mt-0.5">฿{totalCash.toLocaleString()}</span>
+            <span className="text-[10px] text-slate-400">{cashItems.length} บัญชี/รายการ</span>
+          </div>
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80">
+            <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block">🥇 รวมทองคำ</span>
+            <span className="text-xl sm:text-2xl font-extrabold text-amber-700 block mt-0.5">฿{Math.round(totalGold).toLocaleString()}</span>
+            <span className="text-[10px] text-slate-400">{totalGoldWeight.toLocaleString()} บาททองคำ</span>
+          </div>
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80">
+            <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block">🥇 ราคาทองแท่ง/บาท</span>
+            <span className="text-xl sm:text-2xl font-extrabold text-slate-900 block mt-0.5">฿{goldPriceBar.toLocaleString()}</span>
+            <span className="text-[10px] text-slate-400">ราคารับซื้อปัจจุบัน</span>
+          </div>
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80">
+            <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block">📿 ราคาทองรูปพรรณ/บาท</span>
+            <span className="text-xl sm:text-2xl font-extrabold text-slate-900 block mt-0.5">฿{goldPriceJewelry.toLocaleString()}</span>
+            <span className="text-[10px] text-slate-400">ราคารับซื้อปัจจุบัน</span>
+          </div>
+        </div>
+
+        {/* ── ราคาทองอ้างอิง ── */}
+        <GoldPriceBox
+          goldPriceBar={goldPriceBar} goldPriceJewelry={goldPriceJewelry}
+          goldPriceUpdatedText={goldPriceUpdatedText} priceLoading={priceLoading} priceError={priceError}
+          onRefresh={refreshGoldPrice} onManualChange={handleManualPriceChange}
+        />
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          {/* ── เงินสด ── */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4">
+            <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-2.5 mb-3.5">
+              <span className="text-emerald-600">💵</span>รายการเงินสด / เงินฝาก
+            </h2>
+            <div className="space-y-2 mb-3 max-h-64 overflow-y-auto scrollbar-thin">
+              {cashItems.map(item => (
+                <div key={item.id} className="flex justify-between items-center text-xs bg-slate-50 hover:bg-slate-100 transition-colors rounded-xl px-3 py-2 border border-slate-100">
+                  <span className="font-medium text-slate-700 flex-1 min-w-0 truncate">{item.name}</span>
+                  <div className="flex items-center gap-2 ml-2 flex-shrink-0">
+                    <span className="font-bold text-slate-900">฿{(+item.amount || 0).toLocaleString()}</span>
+                    <button onClick={() => deleteCash(item.id)}
+                      className="text-slate-300 hover:text-rose-500 transition-colors w-4 h-4 flex items-center justify-center">✕</button>
+                  </div>
+                </div>
+              ))}
+              {cashItems.length === 0 && <p className="text-xs text-slate-400 italic text-center py-2">ยังไม่มีรายการเงินสด — เพิ่มรายการแรกด้านล่าง</p>}
+            </div>
+            <AddCashForm onAdd={addCash} />
+            <div className="mt-3 flex justify-between text-xs pt-2.5 border-t border-slate-100">
+              <span className="text-slate-500 font-medium">รวมเงินสดทั้งหมด</span>
+              <span className="font-extrabold text-emerald-600">฿{totalCash.toLocaleString()}</span>
+            </div>
+          </div>
+
+          {/* ── ทองคำ ── */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4">
+            <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-2.5 mb-3.5">
+              <span className="text-amber-500">🥇</span>รายการทองคำ
+            </h2>
+            <div className="space-y-2 mb-3 max-h-64 overflow-y-auto scrollbar-thin">
+              {goldItems.map(item => (
+                <div key={item.id} className="flex justify-between items-center text-xs bg-slate-50 hover:bg-slate-100 transition-colors rounded-xl px-3 py-2 border border-slate-100">
+                  <div className="flex-1 min-w-0">
+                    <span className="font-medium text-slate-700 block truncate">
+                      {GOLD_TYPES[item.type]?.emoji} {item.label || GOLD_TYPES[item.type]?.label}
+                    </span>
+                    <span className="text-[10px] text-slate-400">{item.weight} บาททองคำ · {GOLD_TYPES[item.type]?.label}</span>
+                  </div>
+                  <div className="flex items-center gap-2 ml-2 flex-shrink-0">
+                    <span className="font-bold text-slate-900">฿{Math.round(goldValueOf(item)).toLocaleString()}</span>
+                    <button onClick={() => deleteGold(item.id)}
+                      className="text-slate-300 hover:text-rose-500 transition-colors w-4 h-4 flex items-center justify-center">✕</button>
+                  </div>
+                </div>
+              ))}
+              {goldItems.length === 0 && <p className="text-xs text-slate-400 italic text-center py-2">ยังไม่มีรายการทองคำ — เพิ่มรายการแรกด้านล่าง</p>}
+            </div>
+            <AddGoldForm onAdd={addGold} />
+            <div className="mt-3 flex justify-between text-xs pt-2.5 border-t border-slate-100">
+              <span className="text-slate-500 font-medium">รวมทองคำทั้งหมด ({totalGoldWeight.toLocaleString()} บาท)</span>
+              <span className="font-extrabold text-amber-600">฿{Math.round(totalGold).toLocaleString()}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* ── SAVE REMINDER BAR ── */}
+        <div className="bg-gradient-to-r from-amber-50 to-indigo-50 border border-amber-100 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex items-start sm:items-center gap-3">
+            <span className="text-2xl flex-shrink-0">{FIREBASE_READY ? '☁️' : '💾'}</span>
+            <div>
+              <p className="text-sm font-bold text-indigo-800">{FIREBASE_READY ? 'บันทึกออนไลน์' : 'บันทึกในเครื่อง'}</p>
+              <p className="text-xs text-indigo-600">แก้ไขข้อมูลแล้ว? กด "บันทึกข้อมูล" เพื่อเซฟ
+                {lastSaved && <span className="ml-1 text-indigo-400">· บันทึกล่าสุด: {lastSaved}</span>}
+              </p>
+            </div>
+          </div>
+          <button onClick={handleSave} disabled={saving}
+            className="flex-shrink-0 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-sm font-bold px-6 py-2.5 rounded-xl transition-all disabled:opacity-60 shadow-md shadow-indigo-200">
+            {saving ? '⏳ กำลังบันทึก...' : `${FIREBASE_READY ? '☁️' : '💾'} บันทึกข้อมูล`}
+          </button>
+        </div>
+
+      </main>
+
+      <footer className="bg-slate-900 text-slate-400 text-xs py-6 mt-6 border-t border-slate-800">
+        <div className="max-w-6xl mx-auto px-4 text-center space-y-2">
+          <p className="font-semibold text-slate-300">💎 รวบรวมทรัพย์สิน เงิน & ทอง</p>
+          <p className="text-[11px] text-slate-500">
+            ราคาทองอ้างอิงจากสมาคมค้าทองคำ (goldtraders.or.th) ผ่าน API สาธารณะ อาจคลาดเคลื่อนจากราคาจริง ณ เวลาซื้อขายเล็กน้อย
+          </p>
+        </div>
+      </footer>
     </div>
   );
 }
