@@ -242,6 +242,154 @@ function SetupBanner() {
   );
 }
 
+const TH_MONTHS = ['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'];
+const TH_MONTHS_SHORT = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
+const sumItems = (items) => (items || []).reduce((s, i) => s + (+i.amount || 0), 0);
+const fmtShort = (n) => n >= 1000 ? (n / 1000).toFixed(n % 1000 === 0 ? 0 : 1) + 'k' : n.toLocaleString();
+
+// ── Month Timeline (เส้นเวลารายปี + แจ้งเตือนค่าใช้จ่าย) ──
+function MonthTimeline({ monthPlans, onOpenMonth }) {
+  const now = new Date();
+  const curM = now.getMonth();
+  const dim = new Date(now.getFullYear(), curM + 1, 0).getDate();
+  const pos = ((curM + now.getDate() / dim) / 12) * 100;
+  const itemsOf = (m) => (monthPlans && monthPlans[m]) || [];
+  const yearTh = now.getFullYear() + 543;
+
+  const alerts = [{ m: curM, label: 'เดือนนี้', cls: 'bg-amber-50 border-amber-200 text-amber-800' }];
+  if (curM < 11) alerts.push({ m: curM + 1, label: 'เดือนหน้า', cls: 'bg-indigo-50 border-indigo-200 text-indigo-800' });
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4">
+      <div className="flex items-center justify-between border-b border-slate-100 pb-2.5 mb-3.5">
+        <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+          <span className="text-indigo-600">🗓️</span>ไทม์ไลน์ค่าใช้จ่ายรายเดือน ปี {yearTh}
+        </h2>
+        <span className="text-[11px] text-slate-400">วันนี้ {now.getDate()} {TH_MONTHS[curM]} · กดที่เดือนเพื่อแก้ไข</span>
+      </div>
+
+      {/* แจ้งเตือน */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4">
+        {alerts.map(a => {
+          const items = itemsOf(a.m);
+          return (
+            <button key={a.m} onClick={() => onOpenMonth(a.m)}
+              className={`text-left border rounded-xl px-3 py-2.5 text-xs transition-all hover:shadow-md active:scale-[0.99] ${items.length ? a.cls : 'bg-slate-50 border-slate-200 text-slate-500'}`}>
+              <div className="font-bold mb-0.5">
+                {items.length ? '🔔' : '📭'} {a.label} ({TH_MONTHS[a.m]})
+                {items.length > 0 && <span className="float-right">฿{sumItems(items).toLocaleString()}</span>}
+              </div>
+              {items.length
+                ? <div className="text-[11px] leading-snug">{items.map(i => `${i.name} ฿${(+i.amount || 0).toLocaleString()}`).join(' · ')}</div>
+                : <div className="text-[11px]">ยังไม่มีค่าใช้จ่ายที่วางแผนไว้ — กดเพื่อเพิ่ม</div>}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="overflow-x-auto scrollbar-thin">
+        <div className="min-w-[720px]">
+          {/* เส้นเวลา */}
+          <div className="relative h-14">
+            <div className="absolute inset-x-0 top-7 h-2.5 bg-slate-200 rounded-full" />
+            <div className="absolute left-0 top-7 h-2.5 rounded-full bg-gradient-to-r from-emerald-400 to-indigo-500 transition-all duration-700" style={{ width: `${pos}%` }} />
+            {Array.from({ length: 11 }, (_, i) => (
+              <div key={i} className="absolute top-7 h-2.5 w-px bg-white" style={{ left: `${((i + 1) / 12) * 100}%` }} />
+            ))}
+            <div className="absolute top-0 -translate-x-1/2 flex flex-col items-center" style={{ left: `${pos}%` }}>
+              <span className="text-[10px] font-bold text-rose-600 whitespace-nowrap">วันนี้ {now.getDate()} {TH_MONTHS_SHORT[curM]}</span>
+              <span className="mt-0.5 w-6 h-6 rounded-full bg-rose-500 border-2 border-white shadow-md animate-pulse" />
+            </div>
+          </div>
+          {/* เดือน */}
+          <div className="grid grid-cols-12 gap-1">
+            {TH_MONTHS_SHORT.map((name, m) => {
+              const items = itemsOf(m);
+              const total = sumItems(items);
+              const isCur = m === curM, past = m < curM;
+              const alertDot = items.length > 0 && (m === curM || m === curM + 1);
+              return (
+                <button key={m} onClick={() => onOpenMonth(m)}
+                  className={`relative rounded-xl px-1 py-2 text-center border transition-all hover:shadow-md active:scale-95 ${isCur ? 'bg-indigo-50 border-indigo-300 ring-1 ring-indigo-200' : past ? 'bg-slate-50 border-slate-100 opacity-70' : 'bg-white border-slate-200'}`}>
+                  {alertDot && <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse" />}
+                  <span className={`block text-xs font-bold ${isCur ? 'text-indigo-700' : 'text-slate-700'}`}>{name}</span>
+                  {items.length > 0 ? (
+                    <>
+                      <span className="block text-[10px] font-extrabold text-rose-600 mt-0.5">฿{fmtShort(total)}</span>
+                      <span className="block text-[9px] text-slate-400">{items.length} รายการ</span>
+                    </>
+                  ) : <span className="block text-[11px] text-slate-300 mt-0.5">＋</span>}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Month Plan Modal (เพิ่ม/แก้ไข/ลบค่าใช้จ่ายของเดือน) ──
+function MonthPlanModal({ month, items, onChange, onClose, onSave, saving }) {
+  const [name, setName] = useState('');
+  const [amt, setAmt] = useState('');
+  const total = sumItems(items);
+  const yearTh = new Date().getFullYear() + 543;
+
+  const add = () => {
+    if (!name.trim() || !(+amt > 0)) return;
+    onChange([...items, { id: Date.now(), name: name.trim(), amount: +amt }]);
+    setName(''); setAmt('');
+  };
+  const update = (id, patch) => onChange(items.map(i => i.id === id ? { ...i, ...patch } : i));
+  const remove = (id) => onChange(items.filter(i => i.id !== id));
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-3 sm:p-6" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-lg max-h-[88vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="sticky top-0 bg-white border-b border-slate-100 p-4 flex items-center gap-3 rounded-t-2xl">
+          <div className="flex-1 min-w-0">
+            <h3 className="font-bold text-slate-900 text-base">🗓️ {TH_MONTHS[month]} {yearTh}</h3>
+            <p className="text-xs text-slate-400">รวมค่าใช้จ่ายที่วางแผน <span className="font-extrabold text-rose-600">฿{total.toLocaleString()}</span></p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 text-lg px-2" title="ปิด">✕</button>
+        </div>
+        <div className="p-4 space-y-3">
+          <div className="space-y-2">
+            {items.map(i => (
+              <div key={i.id} className="flex gap-1.5 items-center">
+                <input type="text" value={i.name} onChange={e => update(i.id, { name: e.target.value })}
+                  className="flex-1 min-w-0 text-xs border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-400" />
+                <input type="number" min="0" value={i.amount} onChange={e => update(i.id, { amount: +e.target.value || 0 })}
+                  className="w-24 text-xs border border-slate-200 rounded-xl px-2 py-2 outline-none focus:ring-2 focus:ring-indigo-400 text-right" />
+                <button onClick={() => remove(i.id)} className="text-slate-300 hover:text-rose-500 px-1" title="ลบ">✕</button>
+              </div>
+            ))}
+            {items.length === 0 && <p className="text-xs text-slate-400 italic text-center py-3">ยังไม่มีค่าใช้จ่ายในเดือนนี้</p>}
+          </div>
+          <div className="flex gap-1.5 pt-2 border-t border-slate-100">
+            <input type="text" placeholder="ชื่อค่าใช้จ่าย เช่น ค่าเทอม, ประกันรถ" value={name} onChange={e => setName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && add()}
+              className="flex-1 min-w-0 text-xs border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-rose-400" />
+            <input type="number" placeholder="฿" value={amt} onChange={e => setAmt(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && add()}
+              className="w-24 text-xs border border-slate-200 rounded-xl px-2 py-2 outline-none focus:ring-2 focus:ring-rose-400 text-center" />
+            <button onClick={add} className="bg-rose-500 hover:bg-rose-400 active:scale-95 text-white text-xs px-3 py-2 rounded-xl font-bold whitespace-nowrap">+ เพิ่ม</button>
+          </div>
+          <div className="flex gap-2 pt-1">
+            <button onClick={onSave} disabled={saving}
+              className="text-xs font-bold px-4 py-2.5 rounded-xl border border-indigo-200 text-indigo-600 hover:bg-indigo-50 disabled:opacity-50">
+              {saving ? '⏳ กำลังบันทึก...' : `${FIREBASE_READY ? '☁️' : '💾'} บันทึกข้อมูล`}
+            </button>
+            <button onClick={onClose} className="ml-auto text-xs font-bold px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm">เสร็จสิ้น</button>
+          </div>
+          <p className="text-[10px] text-slate-400 text-center">แก้ไขแล้วอย่าลืมกด "บันทึกข้อมูล" เพื่อเซฟลงคลาวด์</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main App ──
 function App() {
   const [page, setPage] = useState('home'); // 'home' | 'installments' | 'assets'
@@ -263,6 +411,8 @@ function App() {
   const [scenarios, setScenarios]             = useState(DEFAULTS.scenarios);
   const [tuitionGoalTarget, setTuitionGoalTarget] = useState(DEFAULTS.tuitionGoalTarget);
   const [tuitionSaved, setTuitionSaved]       = useState(DEFAULTS.tuitionSaved);
+  const [monthPlans, setMonthPlans]           = useState({});
+  const [selectedMonth, setSelectedMonth]     = useState(null);
 
   // Form states
   const [newExpName, setNewExpName]   = useState('');
@@ -292,6 +442,7 @@ function App() {
         if (data.scenarios)                      setScenarios(data.scenarios);
         if (data.tuitionGoalTarget !== undefined) setTuitionGoalTarget(data.tuitionGoalTarget);
         if (data.tuitionSaved !== undefined)     setTuitionSaved(data.tuitionSaved);
+        if (data.monthPlans)                     setMonthPlans(data.monthPlans);
         if (data._savedAt)                       setLastSaved(data._savedAt);
       }
       setLoaded(true);
@@ -302,7 +453,7 @@ function App() {
     grossSalary, netSalary, monthlyExpenses,
     schoolName, tuitionPerTerm, busPerTerm, termsPerYear,
     subsidies, selectedSaving, scenarios,
-    tuitionGoalTarget, tuitionSaved,
+    tuitionGoalTarget, tuitionSaved, monthPlans,
     _savedAt: new Date().toLocaleString('th-TH'),
   });
 
@@ -316,6 +467,8 @@ function App() {
       ? (FIREBASE_READY ? '☁️ บันทึกออนไลน์เรียบร้อย!' : '💾 บันทึกในเครื่องเรียบร้อย!')
       : '❌ บันทึกไม่สำเร็จ กรุณาลองใหม่');
   };
+
+  const setMonthItems = (m, list) => setMonthPlans(prev => ({ ...prev, [m]: list }));
 
   const handleReset = () => {
     if (!window.confirm('รีเซ็ตข้อมูลทั้งหมดกลับเป็นค่าเริ่มต้น?')) return;
@@ -331,6 +484,7 @@ function App() {
     setScenarios(DEFAULTS.scenarios);
     setTuitionGoalTarget(DEFAULTS.tuitionGoalTarget);
     setTuitionSaved(DEFAULTS.tuitionSaved);
+    setMonthPlans({});
     showToast('🔄 รีเซ็ตข้อมูลแล้ว');
   };
 
@@ -436,6 +590,19 @@ function App() {
       <main className="max-w-6xl mx-auto px-4 py-5 sm:px-6 space-y-5">
 
         <SetupBanner />
+
+        {/* ── MONTH TIMELINE ── */}
+        <MonthTimeline monthPlans={monthPlans} onOpenMonth={setSelectedMonth} />
+        {selectedMonth !== null && (
+          <MonthPlanModal
+            month={selectedMonth}
+            items={(monthPlans && monthPlans[selectedMonth]) || []}
+            onChange={(list) => setMonthItems(selectedMonth, list)}
+            onClose={() => setSelectedMonth(null)}
+            onSave={handleSave}
+            saving={saving}
+          />
+        )}
 
         {/* ── SUMMARY CARDS ── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
