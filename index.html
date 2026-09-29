@@ -245,10 +245,13 @@ function SetupBanner() {
 const TH_MONTHS = ['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'];
 const TH_MONTHS_SHORT = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
 const sumItems = (items) => (items || []).reduce((s, i) => s + (+i.amount || 0), 0);
+const sumPaid = (items) => (items || []).filter(i => i.paid).reduce((s, i) => s + (+i.amount || 0), 0);
+const sumUnpaid = (items) => (items || []).filter(i => !i.paid).reduce((s, i) => s + (+i.amount || 0), 0);
+const countPaid = (items) => (items || []).filter(i => i.paid).length;
 const fmtShort = (n) => n >= 1000 ? (n / 1000).toFixed(n % 1000 === 0 ? 0 : 1) + 'k' : n.toLocaleString();
 
 // ── Month Timeline (เส้นเวลารายปี + แจ้งเตือนค่าใช้จ่าย) ──
-function MonthTimeline({ monthPlans, onOpenMonth }) {
+function MonthTimeline({ monthPlans, onOpenMonth, onTogglePaid }) {
   const now = new Date();
   const curM = now.getMonth();
   const dim = new Date(now.getFullYear(), curM + 1, 0).getDate();
@@ -276,12 +279,26 @@ function MonthTimeline({ monthPlans, onOpenMonth }) {
             <button key={a.m} onClick={() => onOpenMonth(a.m)}
               className={`text-left border rounded-xl px-3 py-2.5 text-xs transition-all hover:shadow-md active:scale-[0.99] ${items.length ? a.cls : 'bg-slate-50 border-slate-200 text-slate-500'}`}>
               <div className="font-bold mb-0.5">
-                {items.length ? '🔔' : '📭'} {a.label} ({TH_MONTHS[a.m]})
-                {items.length > 0 && <span className="float-right">฿{sumItems(items).toLocaleString()}</span>}
+                {items.length ? (sumUnpaid(items) === 0 ? '✅' : '🔔') : '📭'} {a.label} ({TH_MONTHS[a.m]})
+                {items.length > 0 && (
+                  <span className="float-right">
+                    {sumUnpaid(items) > 0
+                      ? <>เหลือ ฿{sumUnpaid(items).toLocaleString()}</>
+                      : <span className="text-emerald-600">จ่ายครบแล้ว</span>}
+                  </span>
+                )}
               </div>
-              {items.length
-                ? <div className="text-[11px] leading-snug">{items.map(i => `${i.name} ฿${(+i.amount || 0).toLocaleString()}`).join(' · ')}</div>
-                : <div className="text-[11px]">ยังไม่มีค่าใช้จ่ายที่วางแผนไว้ — กดเพื่อเพิ่ม</div>}
+              {items.length > 0 ? (
+                <div className="space-y-1 mt-1">
+                  {items.map(i => (
+                    <label key={i.id} className="flex items-center gap-1.5 text-[11px] cursor-pointer" onClick={e => e.stopPropagation()}>
+                      <input type="checkbox" checked={!!i.paid} onChange={() => onTogglePaid(a.m, i.id)}
+                        className="w-3.5 h-3.5 rounded accent-emerald-500 flex-shrink-0" />
+                      <span className={i.paid ? 'line-through text-slate-400' : ''}>{i.name} ฿{(+i.amount || 0).toLocaleString()}</span>
+                    </label>
+                  ))}
+                </div>
+              ) : <div className="text-[11px]">ยังไม่มีค่าใช้จ่ายที่วางแผนไว้ — กดเพื่อเพิ่ม</div>}
             </button>
           );
         })}
@@ -307,16 +324,19 @@ function MonthTimeline({ monthPlans, onOpenMonth }) {
               const items = itemsOf(m);
               const total = sumItems(items);
               const isCur = m === curM, past = m < curM;
-              const alertDot = items.length > 0 && (m === curM || m === curM + 1);
+              const unpaid = sumUnpaid(items);
+              const fullyPaid = items.length > 0 && unpaid === 0;
+              const alertDot = items.length > 0 && !fullyPaid && (m === curM || m === curM + 1);
               return (
                 <button key={m} onClick={() => onOpenMonth(m)}
                   className={`relative rounded-xl px-1 py-2 text-center border transition-all hover:shadow-md active:scale-95 ${isCur ? 'bg-indigo-50 border-indigo-300 ring-1 ring-indigo-200' : past ? 'bg-slate-50 border-slate-100 opacity-70' : 'bg-white border-slate-200'}`}>
                   {alertDot && <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse" />}
+                  {fullyPaid && <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-emerald-500" />}
                   <span className={`block text-xs font-bold ${isCur ? 'text-indigo-700' : 'text-slate-700'}`}>{name}</span>
                   {items.length > 0 ? (
                     <>
-                      <span className="block text-[10px] font-extrabold text-rose-600 mt-0.5">฿{fmtShort(total)}</span>
-                      <span className="block text-[9px] text-slate-400">{items.length} รายการ</span>
+                      <span className={`block text-[10px] font-extrabold mt-0.5 ${fullyPaid ? 'text-emerald-600' : 'text-rose-600'}`}>฿{fmtShort(fullyPaid ? total : unpaid)}</span>
+                      <span className="block text-[9px] text-slate-400">✅{countPaid(items)}/{items.length}</span>
                     </>
                   ) : <span className="block text-[11px] text-slate-300 mt-0.5">＋</span>}
                 </button>
@@ -338,11 +358,13 @@ function MonthPlanModal({ month, items, onChange, onClose, onSave, saving }) {
 
   const add = () => {
     if (!name.trim() || !(+amt > 0)) return;
-    onChange([...items, { id: Date.now(), name: name.trim(), amount: +amt }]);
+    onChange([...items, { id: Date.now(), name: name.trim(), amount: +amt, paid: false }]);
     setName(''); setAmt('');
   };
   const update = (id, patch) => onChange(items.map(i => i.id === id ? { ...i, ...patch } : i));
   const remove = (id) => onChange(items.filter(i => i.id !== id));
+  const togglePaid = (id) => update(id, { paid: !items.find(i => i.id === id)?.paid });
+  const paidTotal = sumPaid(items), unpaidTotal = sumUnpaid(items);
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-3 sm:p-6" onClick={onClose}>
@@ -350,18 +372,25 @@ function MonthPlanModal({ month, items, onChange, onClose, onSave, saving }) {
         <div className="sticky top-0 bg-white border-b border-slate-100 p-4 flex items-center gap-3 rounded-t-2xl">
           <div className="flex-1 min-w-0">
             <h3 className="font-bold text-slate-900 text-base">🗓️ {TH_MONTHS[month]} {yearTh}</h3>
-            <p className="text-xs text-slate-400">รวมค่าใช้จ่ายที่วางแผน <span className="font-extrabold text-rose-600">฿{total.toLocaleString()}</span></p>
+            <p className="text-xs text-slate-400">
+              รวม <span className="font-extrabold text-slate-700">฿{total.toLocaleString()}</span>
+              {' · '}จ่ายแล้ว <span className="font-extrabold text-emerald-600">฿{paidTotal.toLocaleString()}</span>
+              {' · '}เหลือ <span className="font-extrabold text-rose-600">฿{unpaidTotal.toLocaleString()}</span>
+            </p>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-700 text-lg px-2" title="ปิด">✕</button>
         </div>
         <div className="p-4 space-y-3">
           <div className="space-y-2">
             {items.map(i => (
-              <div key={i.id} className="flex gap-1.5 items-center">
+              <div key={i.id} className={`flex gap-1.5 items-center rounded-xl px-2 py-1.5 ${i.paid ? 'bg-emerald-50' : ''}`}>
+                <input type="checkbox" checked={!!i.paid} onChange={() => togglePaid(i.id)}
+                  title="ทำเครื่องหมายว่าชำระแล้ว"
+                  className="w-4 h-4 rounded accent-emerald-500 flex-shrink-0" />
                 <input type="text" value={i.name} onChange={e => update(i.id, { name: e.target.value })}
-                  className="flex-1 min-w-0 text-xs border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-400" />
+                  className={`flex-1 min-w-0 text-xs border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-400 ${i.paid ? 'line-through text-slate-400' : ''}`} />
                 <input type="number" min="0" value={i.amount} onChange={e => update(i.id, { amount: +e.target.value || 0 })}
-                  className="w-24 text-xs border border-slate-200 rounded-xl px-2 py-2 outline-none focus:ring-2 focus:ring-indigo-400 text-right" />
+                  className={`w-24 text-xs border border-slate-200 rounded-xl px-2 py-2 outline-none focus:ring-2 focus:ring-indigo-400 text-right ${i.paid ? 'line-through text-slate-400' : ''}`} />
                 <button onClick={() => remove(i.id)} className="text-slate-300 hover:text-rose-500 px-1" title="ลบ">✕</button>
               </div>
             ))}
@@ -469,6 +498,10 @@ function App() {
   };
 
   const setMonthItems = (m, list) => setMonthPlans(prev => ({ ...prev, [m]: list }));
+  const toggleMonthItemPaid = (m, id) => setMonthPlans(prev => ({
+    ...prev,
+    [m]: (prev[m] || []).map(i => i.id === id ? { ...i, paid: !i.paid } : i),
+  }));
 
   const handleReset = () => {
     if (!window.confirm('รีเซ็ตข้อมูลทั้งหมดกลับเป็นค่าเริ่มต้น?')) return;
@@ -592,7 +625,7 @@ function App() {
         <SetupBanner />
 
         {/* ── MONTH TIMELINE ── */}
-        <MonthTimeline monthPlans={monthPlans} onOpenMonth={setSelectedMonth} />
+        <MonthTimeline monthPlans={monthPlans} onOpenMonth={setSelectedMonth} onTogglePaid={toggleMonthItemPaid} />
         {selectedMonth !== null && (
           <MonthPlanModal
             month={selectedMonth}
